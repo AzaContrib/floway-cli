@@ -2,6 +2,7 @@
 
 mod agents;
 mod gateway;
+mod install;
 mod json_doc;
 mod menu;
 mod state;
@@ -23,7 +24,22 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Interactively choose which agentic framework to install and configure.
-    Install,
+    Install {
+        /// Floway gateway origin; skips the endpoint prompt.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// Floway API key; skips the key prompt.
+        #[arg(long, value_name = "KEY")]
+        api_key: Option<String>,
+        /// Select agents without the menu: a comma list of ids
+        /// (claude-code,codex,oh-my-pi,opencode,zed,vscode) or `all`.
+        #[arg(long, value_name = "LIST")]
+        agents: Option<String>,
+        /// Fail instead of prompting when information is missing; also implied
+        /// by every flag being present.
+        #[arg(long)]
+        non_interactive: bool,
+    },
     /// Re-fetch the model list and re-apply configuration for installed agents.
     Update,
     /// Remove Floway configuration from every previously-configured agent.
@@ -40,8 +56,18 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Install) => {
-            install_cmd()?;
+        Some(Command::Install {
+            endpoint,
+            api_key,
+            agents,
+            non_interactive,
+        }) => {
+            install::run(install::Options {
+                endpoint,
+                api_key,
+                agents,
+                non_interactive,
+            })?;
             Ok(())
         }
         Some(Command::Update) => {
@@ -54,7 +80,7 @@ fn run() -> Result<()> {
         }
         // No subcommand: default to the interactive install menu.
         None => {
-            install_cmd()?;
+            install::run(install::Options::default())?;
             Ok(())
         }
     }
@@ -62,74 +88,6 @@ fn run() -> Result<()> {
 
 // ---------------------------------------------------------------------------
 // install
-
-fn install_cmd() -> Result<()> {
-    let mut store = state::Store::load().unwrap_or_default();
-
-    // A previously saved endpoint/key carries over; the menu offers to reuse it
-    // and keeps the flow one keystroke from done for the common case.
-    let (endpoint, api_key) = match (store.credentials().cloned(), menu::noninteractive()) {
-        (Some(creds), false) => {
-            println!(
-                "Using saved endpoint {} (from a previous floway install).",
-                ui::cyan(&creds.endpoint)
-            );
-            let key = menu::confirm("Reuse the saved Floway API key?", true)?;
-            let endpoint = creds.endpoint.clone();
-            let api_key = if key {
-                creds.api_key.clone()
-            } else {
-                prompt_api_key(&endpoint, Some(&creds.api_key))?
-            };
-            (endpoint, api_key)
-        }
-        _ => {
-            let endpoint = prompt_endpoint(store.credentials().map(|c| c.endpoint.as_str()))?;
-            let api_key = prompt_api_key(&endpoint, None)?;
-            (endpoint, api_key)
-        }
-    };
-
-    // Fail before touching any agent when the credentials or gateway are bad.
-    print!("Verifying the endpoint and key … ");
-    ui::flush();
-    let client = gateway::Client::new(endpoint.clone(), api_key.clone())?;
-    let models = client
-        .fetch_models()
-        .context("could not reach the Floway gateway with this key")?;
-    println!(
-        "{}",
-        ui::green(&format!("ok, {} chat models", models.data.len()))
-    );
-
-    let selected = menu::select_agents("Which agentic frameworks should floway set up?", &[])?;
-    if selected.is_empty() {
-        println!("Nothing selected; done.");
-        return Ok(());
-    }
-
-    let mut any_failed = false;
-    for agent in &selected {
-        if let Err(error) = configure_agent(&mut store, agent, &client, &models) {
-            any_failed = true;
-            eprintln!(
-                "{}: configuring {} failed: {error:#}",
-                ui::red("error"),
-                agent.label()
-            );
-        }
-    }
-
-    store.set_credentials(state::Credentials { endpoint, api_key });
-    store
-        .save()
-        .context("could not persist floway state; agent configuration may not survive")?;
-
-    if any_failed {
-        bail!("one or more agents failed to configure; see the output above");
-    }
-    Ok(())
-}
 
 /// Write a file with mode 0600 via a same-directory stage + rename.
 pub fn write_private_file(path: &std::path::Path, body: &str) -> std::io::Result<()> {
@@ -164,29 +122,6 @@ pub fn write_private_file(path: &std::path::Path, body: &str) -> std::io::Result
     Ok(())
 }
 
-fn prompt_endpoint(saved: Option<&str>) -> Result<String> {
-    let default = saved.unwrap_or("http://localhost:18088");
-    let raw = ui::prompt("Floway gateway endpoint", default)?;
-    let trimmed = raw.trim().trim_end_matches('/').to_string();
-    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-        bail!("the endpoint must be an http(s) origin, got {trimmed}");
-    }
-    Ok(trimmed)
-}
-
-fn prompt_api_key(endpoint: &str, saved: Option<&String>) -> Result<String> {
-    let raw = match saved {
-        Some(key) => ui::secret_prompt_with_default("Floway API key", key)?,
-        None => ui::secret_prompt("Floway API key")?,
-    };
-    let key = raw.trim().to_string();
-    if key.is_empty() {
-        bail!("an API key is required (create one in the Floway dashboard under Services → API Keys, endpoint {endpoint})");
-    }
-    Ok(key)
-}
-
-// ---------------------------------------------------------------------------
 // update
 
 fn update_cmd() -> Result<()> {
@@ -297,17 +232,3 @@ fn uninstall_cmd() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// shared configure path
-
-fn configure_agent(
-    store: &mut state::Store,
-    agent: &agents::AgentKind,
-    client: &gateway::Client,
-    models: &gateway::ModelList,
-) -> Result<()> {
-    println!("{}", ui::bold(&format!("Setting up {}", agent.label())));
-    let summary = agent.apply(client, models)?;
-    println!("{}", ui::green(&format!("  {summary}")));
-    store.add_agent(*agent);
-    Ok(())
-}
