@@ -1,0 +1,31 @@
+[package]
+name = "floway-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Set up agentic harnesses for the Floway API router"
+license = "MIT"
+
+[[bin]]
+name = "floway"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+toml = "0.9"
+toml_edit = "0.23"
+libc = "0.2"
+
+# yaml is only needed for the oh-my-pi models.yml writer; keep the default
+# engines but without the irrelevant zig refactor
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["user"] }
