@@ -51,9 +51,10 @@ jobs:
         if: matrix.install-musl-tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools musl-tools-multi
           if [ '${{ matrix.target }}' = 'aarch64-unknown-linux-musl' ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu
+            sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu musl-dev
+          else
+            sudo apt-get install -y musl-tools
           fi
 
       - name: Cache cargo
@@ -67,6 +68,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
           CC_AARCH64_UNKNOWN_LINUX_MUSL: aarch64-linux-gnu-gcc
           AR_AARCH64_UNKNOWN_LINUX_MUSL: aarch64-linux-gnu-ar
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: '-C link-arg=-lgcc'
 
       - name: Stage artifact
         shell: bash
