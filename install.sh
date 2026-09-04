@@ -15,7 +15,7 @@
 #   agent-setup installer convention.
 set -u
 
-REPO="${FLOWAY_CLI_REPO:-hykilpikonna/floway-cli}"
+REPO="${FLOWAY_CLI_REPO:-AzaContrib/floway-cli}"
 BIN_NAME=floway
 INSTALL_DIR="${FLOWAY_CLI_INSTALL_DIR:-$HOME/.local/bin}"
 
