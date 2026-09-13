@@ -59,54 +59,59 @@ pub fn prompt(label: &str, default: &str) -> Result<String> {
 pub fn secret_prompt(label: &str) -> Result<String> {
     print!("{label}: ");
     flush();
-    let masked = read_masked()?;
-    if !masked.is_empty() {
-        println!();
-        return Ok(masked);
+    match read_masked()? {
+        Some(value) => Ok(value),
+        None => {
+            print!("{} ", dim("(echo cannot be disabled; key will be visible)"));
+            flush();
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("could not read from stdin")?;
+            Ok(line.trim().to_string())
+        }
     }
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("could not read from stdin")?;
-    Ok(line.trim().to_string())
 }
 
 /// Prompt with a saved default; Enter accepts the saved value.
 pub fn secret_prompt_with_default(label: &str, default: &str) -> Result<String> {
     print!("{label} [press Enter to reuse the saved key]: ");
     flush();
-    let masked = read_masked()?;
-    if !masked.is_empty() {
-        println!();
-        return Ok(masked);
-    }
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("could not read from stdin")?;
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    let text = match read_masked()? {
+        Some(value) => value,
+        None => {
+            print!("{} ", dim("(echo cannot be disabled; key will be visible)"));
+            flush();
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("could not read from stdin")?;
+            line.trim().to_string()
+        }
+    };
+    if text.is_empty() {
         Ok(default.to_string())
     } else {
-        Ok(trimmed.to_string())
+        Ok(text)
     }
 }
 
-/// Raw-read bytes with echo disabled. Empty result means "echo fell back" or
-/// "user typed nothing".
+/// Raw-read bytes with echo disabled. Returns `Some(value)` when termios was
+/// available (even if the user entered an empty line), or `None` when termios
+/// was unavailable and echo could not be disabled.
 #[cfg(unix)]
-fn read_masked() -> Result<String> {
+fn read_masked() -> Result<Option<String>> {
     let mut termios = std::mem::MaybeUninit::uninit();
     // SAFETY: termios(3) — tcgetattr fills the termios struct; the fd is stdin.
     if unsafe { libc::tcgetattr(0, termios.as_mut_ptr()) } != 0 {
-        return Ok(String::new());
+        return Ok(None);
     }
     let mut termios = unsafe { termios.assume_init() };
     let original = termios;
     termios.c_lflag &= !libc::ECHO;
     // SAFETY: same termios struct we just read.
     if unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) } != 0 {
-        return Ok(String::new());
+        return Ok(None);
     }
     let mut buffer = Vec::new();
     let result = std::io::stdin().lock().read_until(b'\n', &mut buffer);
@@ -114,11 +119,12 @@ fn read_masked() -> Result<String> {
     // SAFETY: restoring the saved attributes.
     unsafe { libc::tcsetattr(0, libc::TCSANOW, &original) };
     result.context("could not read from stdin")?;
+    println!();
     let text = String::from_utf8_lossy(&buffer);
-    Ok(text.trim().to_string())
+    Ok(Some(text.trim().to_string()))
 }
 
 #[cfg(not(unix))]
-fn read_masked() -> Result<String> {
-    Ok(String::new())
+fn read_masked() -> Result<Option<String>> {
+    Ok(None)
 }

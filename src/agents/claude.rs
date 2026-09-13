@@ -104,9 +104,9 @@ mod tests {
     fn apply_then_unconfigure_round_trip() {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("floway-claude-e2e-{}", std::process::id()));
-        std::env::remove_var("CLAUDE_CONFIG_DIR");
-        std::env::set_var("HOME", &dir);
-        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        let claude_dir = dir.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
 
         let client = crate::gateway::Client::new("http://gw".into(), "key".into()).unwrap();
         let models = crate::gateway::ModelList { data: vec![] };

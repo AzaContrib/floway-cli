@@ -1,6 +1,7 @@
 //! floway-cli — set up agentic harnesses for the Floway API router.
 
 mod agents;
+mod fs_util;
 mod gateway;
 mod install;
 mod json_doc;
@@ -90,36 +91,8 @@ fn run() -> Result<()> {
 // install
 
 /// Write a file with mode 0600 via a same-directory stage + rename.
-pub fn write_private_file(path: &std::path::Path, body: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let stage = path.with_file_name(format!(
-        "{}.floway-stage.{}",
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        std::process::id()
-    ));
-    {
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&stage)?;
-        file.write_all(body.as_bytes())?;
-        file.flush()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    std::fs::rename(&stage, path)?;
-    Ok(())
+pub fn write_private_file(path: &std::path::Path, body: &str) -> Result<()> {
+    fs_util::write_atomic(path, body.as_bytes(), 0o600)
 }
 
 // update
@@ -131,8 +104,6 @@ fn update_cmd() -> Result<()> {
         None => bail!("no floway state found; run `floway install` first"),
     };
 
-    // Also offer agents whose config we found but never recorded (e.g. an
-    // interrupted run that still wrote files).
     let installed: Vec<agents::AgentKind> = store.installed_agents().to_vec();
     if installed.is_empty() {
         bail!("no previously-installed agents recorded; run `floway install` first");
@@ -148,7 +119,6 @@ fn update_cmd() -> Result<()> {
     for agent in &installed {
         print!("{:>12}  ", agent.label());
         ui::flush();
-        let written = agent.config_paths();
         match agent.apply(&client, &models) {
             Ok(summary) => println!("{}", ui::green(&format!("updated — {summary}"))),
             Err(error) => {
@@ -157,7 +127,6 @@ fn update_cmd() -> Result<()> {
                 eprintln!("  {error:#}");
             }
         }
-        let _ = written; // paths reported via summary above
     }
 
     // Self-update hint: the CLI updates agents, not itself; keep `update`'s

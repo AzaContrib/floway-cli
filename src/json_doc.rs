@@ -4,7 +4,6 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::io::Write;
 use std::path::Path;
 
 /// Load a JSON document, or `{}` when the file does not exist. Rejects a
@@ -48,40 +47,9 @@ pub fn ensure_object_in<'a>(
 }
 
 /// Atomically replace `path` with `doc`, staging in the same directory with
-/// the requested mode. Preserves the previous file's owner/mode where the
-/// platform allows; the stage rename keeps concurrent readers consistent.
+/// the requested mode.
 pub fn save(path: &Path, doc: &Value, mode: u32) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("could not create {}", parent.display()))?;
-    }
     let mut body = serde_json::to_string_pretty(doc)?;
     body.push('\n');
-
-    let stage = path.with_extension(format!(
-        "{}.floway-stage.{}",
-        path.extension()
-            .map(|e| e.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        std::process::id()
-    ));
-    {
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        options.mode(mode);
-        let mut file = options.open(&stage)?;
-        file.write_all(body.as_bytes())?;
-        file.flush()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-        }
-    }
-    std::fs::rename(&stage, path)
-        .with_context(|| format!("could not replace {}", path.display()))?;
-    Ok(())
+    crate::fs_util::write_atomic(path, body.as_bytes(), mode)
 }

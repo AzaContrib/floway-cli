@@ -29,8 +29,11 @@ error() {
 ENDPOINT=""
 API_KEY=""
 AGENTS=""
+PINNED_VERSION="${FLOWAY_CLI_VERSION:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --version) PINNED_VERSION="$2"; shift 2 ;;
+    --version=*) PINNED_VERSION="${1#*=}"; shift ;;
     --endpoint) ENDPOINT="$2"; shift 2 ;;
     --endpoint=*) ENDPOINT="${1#*=}"; shift ;;
     --api-key|--key) API_KEY="$2"; shift 2 ;;
@@ -72,22 +75,36 @@ else
   error 'neither curl nor wget is available; install one and retry'
 fi
 
-# The latest release tag; GH exposes it as a stable redirect URL.
-LATEST_URL="https://github.com/$REPO/releases/latest"
-VERSION="$(fetch_stdout "$LATEST_URL" -I -o /dev/null -w '%{url_effective}' 2>/dev/null | sed 's#.*/tag/##')"
-case "$VERSION" in
-  v[0-9]*) ;;
-  *) VERSION='latest' ;;
-esac
+if [ -n "$PINNED_VERSION" ]; then
+  case "$PINNED_VERSION" in
+    v[0-9]*) VERSION="$PINNED_VERSION" ;;
+    *) error "invalid version format: $PINNED_VERSION (expected v[0-9]*, e.g. v0.1.0)" ;;
+  esac
+else
+  # The latest release tag; GH exposes it as a stable redirect URL.
+  LATEST_URL="https://github.com/$REPO/releases/latest"
+  if command -v curl >/dev/null 2>&1; then
+    VERSION="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$LATEST_URL" 2>/dev/null | sed 's#.*/tag/##')"
+  elif command -v wget >/dev/null 2>&1; then
+    VERSION="$(wget --max-redirect=0 "$LATEST_URL" 2>&1 | sed -n 's#.*Location: .*/tag/\([^ ]*\).*#\1#p' | head -n 1)"
+  else
+    VERSION=""
+  fi
+  case "$VERSION" in
+    v[0-9]*) ;;
+    *) VERSION='latest' ;;
+  esac
+
+  if [ "$VERSION" = 'latest' ]; then
+    # Resolve the real tag so artifact URLs are stable even when newest-first
+    # ordering matters; fall back to the redirect target fetch.
+    RELEASE_API="https://api.github.com/repos/$REPO/releases/latest"
+    VERSION="$(fetch_stdout "$RELEASE_API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
+    [ -n "$VERSION" ] || error "could not determine the latest release tag from $RELEASE_API"
+  fi
+fi
 
 BASE="https://github.com/$REPO/releases/download"
-if [ "$VERSION" = 'latest' ]; then
-  # Resolve the real tag so artifact URLs are stable even when newest-first
-  # ordering matters; fall back to the redirect target fetch.
-  RELEASE_API="https://api.github.com/repos/$REPO/releases/latest"
-  VERSION="$(fetch_stdout "$RELEASE_API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
-  [ -n "$VERSION" ] || error "could not determine the latest release tag from $RELEASE_API"
-fi
 
 ARTIFACT="$BIN_NAME-$TARGET.tar.gz"
 URL="$BASE/$VERSION/$ARTIFACT"

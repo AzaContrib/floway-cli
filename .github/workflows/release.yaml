@@ -78,24 +78,22 @@ jobs:
           STAGE="${{ env.BIN_NAME }}-${{ matrix.target }}"
           mkdir "$STAGE"
           cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}$EXT" "$STAGE/${{ env.BIN_NAME }}$EXT"
-          cp README.md LICENSE "$STAGE"/ 2>/dev/null || cp README.md "$STAGE"/
+          cp README.md LICENSE "$STAGE"/
+          tar -czf "$STAGE.tar.gz" "$STAGE"
           if [ "$(uname -s)" = 'Darwin' ]; then
-            sha256sum="" ; shasum -a 256 "$STAGE/${{ env.BIN_NAME }}$EXT" > "$STAGE/${{ env.BIN_NAME }}$EXT.sha256"
+            shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
           else
-            sha256sum "$STAGE/${{ env.BIN_NAME }}$EXT" > "$STAGE/${{ env.BIN_NAME }}$EXT.sha256"
+            sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
           fi
-          if [ "$(uname -s)" = 'Darwin' ]; then
-            tar -czf "$STAGE.tar.gz" "$STAGE"
-          else
-            tar -czf "$STAGE.tar.gz" "$STAGE"
-          fi
-          echo "ARTIFACT=$STAGE.tar.gz" >> "$GITHUB_ENV"
+          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: ${{ env.ARTIFACT }}
+          path: |
+            ${{ env.STAGE }}.tar.gz
+            ${{ env.STAGE }}.tar.gz.sha256
           if-no-files-found: error
 
   release:
@@ -113,5 +111,5 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.tar.gz
+          files: dist/*
           generate_release_notes: true

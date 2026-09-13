@@ -55,14 +55,9 @@ impl Store {
     }
 
     pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("could not create {}", parent.display()))?;
-        }
         let body = serde_json::to_string_pretty(&self.state)?;
         // Mode 0600: the state carries the API key.
-        write_private(&self.path, &body)
-            .with_context(|| format!("could not write {}", self.path.display()))
+        crate::fs_util::write_atomic(&self.path, body.as_bytes(), 0o600)
     }
 
     pub fn set_credentials_to_none(&mut self) {
@@ -106,25 +101,6 @@ fn state_path() -> PathBuf {
         },
     };
     base.join("floway-cli").join("state.json")
-}
-
-/// Write a file with owner-only permissions (mode 0600), atomically: stage in
-/// the same directory, then rename over the target.
-fn write_private(path: &PathBuf, body: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let stage = path.with_extension(format!("json.stage.{}", std::process::id()));
-    {
-        let file = std::fs::File::create(&stage)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        let mut writer = std::io::BufWriter::new(file);
-        writer.write_all(body.as_bytes())?;
-        writer.flush()?;
-    }
-    std::fs::rename(&stage, path)
 }
 
 #[cfg(test)]

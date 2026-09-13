@@ -70,6 +70,7 @@ pub fn select_agents(question: &str, preselected: &[AgentKind]) -> Result<Vec<Ag
     }
 
     println!("{}", ui::bold(question));
+    ui::flush();
     let agents: &[AgentKind; 6] = &crate::agents::ALL_AGENTS;
     let mut checked: Vec<bool> = agents
         .iter()
@@ -78,9 +79,16 @@ pub fn select_agents(question: &str, preselected: &[AgentKind]) -> Result<Vec<Ag
     let mut cursor = 0usize;
 
     enable_raw_mode()?;
-    let result = menu_loop(agents, &mut checked, &mut cursor);
-    disable_raw_mode()?;
-    result
+    let _guard = RawModeGuard;
+    menu_loop(agents, &mut checked, &mut cursor)
+}
+
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
 }
 
 fn menu_loop(
@@ -90,11 +98,13 @@ fn menu_loop(
 ) -> Result<Vec<AgentKind>> {
     let mut first_draw = true;
     loop {
+        let mut stdout = std::io::stdout();
         if !first_draw {
             // Move up N+1 lines and clear, redrawing in place.
             crossterm::execute!(
-                std::io::stdout(),
+                stdout,
                 crossterm::cursor::MoveUp(agents.len() as u16 + 1),
+                crossterm::cursor::MoveToColumn(0),
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
             )?;
         }
@@ -110,12 +120,21 @@ fn menu_loop(
                     text.to_string()
                 }
             };
-            println!("{pointer} [{marker}] {}", &style(agent.label()));
+            crossterm::execute!(
+                stdout,
+                crossterm::style::Print(format!(
+                    "\r{pointer} [{marker}] {}\r\n",
+                    &style(agent.label())
+                ))
+            )?;
         }
-        println!(
-            "{}",
-            ui::dim("  ↑/↓ or j/k to move, space to toggle, a to toggle all, enter to confirm, esc to cancel")
-        );
+        crossterm::execute!(
+            stdout,
+            crossterm::style::Print(format!(
+                "\r{}\r\n",
+                ui::dim("  ↑/↓ or j/k to move, space to toggle, a to toggle all, enter to confirm, esc to cancel")
+            ))
+        )?;
 
         let event = read()?;
         let KeyEvent {

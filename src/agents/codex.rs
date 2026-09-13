@@ -65,7 +65,7 @@ pub fn apply(client: &Client, models: &ModelList) -> Result<String> {
     floway["base_url"] = toml_edit::value(format!("{}/azure-api.codex", client.endpoint()));
     // Command auth opts the provider into online model refresh; the actor
     // marker enables Codex's client-owned search and image extensions.
-    floway["auth"] = toml_edit::value(format!("cat \"{}\"", token_path().display()));
+    floway["auth"] = toml_edit::value(r#"cat "${CODEX_HOME:-$HOME/.codex}/floway-token""#);
     floway["wire_api"] = toml_edit::value("responses");
     floway["supports_websockets"] = toml_edit::value(true);
     let mut headers = toml_edit::Table::new();
@@ -106,17 +106,55 @@ pub fn unconfigure() -> Result<Option<String>> {
         let raw = std::fs::read_to_string(&path)?;
         if let Ok(mut doc) = raw.parse::<toml_edit::DocumentMut>() {
             let root = doc.as_table_mut();
-            let had_marker = root.get("model_provider").and_then(|v| v.as_str()) == Some("floway");
-            root.remove("model_provider");
-            root.remove("suppress_unstable_features_warning");
-            root.remove("model_providers");
-            root.remove("features");
-            if had_marker {
-                crate::toml_doc::save(&path, &doc)?;
+            let mut removed_any = false;
+
+            if root.get("model_provider").and_then(|v| v.as_str()) == Some("floway") {
+                root.remove("model_provider");
+                removed_any = true;
+            }
+            if root.remove("suppress_unstable_features_warning").is_some() {
+                removed_any = true;
+            }
+
+            let should_prune_providers = if let Some(providers) = root
+                .get_mut("model_providers")
+                .and_then(|i| i.as_table_like_mut())
+            {
+                if providers.remove("floway").is_some() {
+                    removed_any = true;
+                }
+                providers.is_empty()
+            } else {
+                false
+            };
+            if should_prune_providers {
+                root.remove("model_providers");
+            }
+
+            let should_prune_features = if let Some(features) =
+                root.get_mut("features").and_then(|i| i.as_table_like_mut())
+            {
+                if features.remove("apps").is_some() {
+                    removed_any = true;
+                }
+                if features.remove("standalone_web_search").is_some() {
+                    removed_any = true;
+                }
+                features.is_empty()
+            } else {
+                false
+            };
+            if should_prune_features {
+                root.remove("features");
+            }
+
+            if removed_any {
                 // The file only existed for Floway's keys; an emptied
                 // document is noise, so drop it.
                 if doc.to_string().trim().is_empty() {
                     std::fs::remove_file(&path)?;
+                } else {
+                    crate::toml_doc::save(&path, &doc)?;
                 }
                 touched.push(path.display().to_string());
             }
@@ -134,4 +172,116 @@ pub fn unconfigure() -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(format!("removed {}", touched.join(", "))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn unconfigure_preserves_unrelated_keys_and_comments() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-codex-test-1-{}", std::process::id()));
+        let codex_dir = dir.join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::env::set_var("CODEX_HOME", &codex_dir);
+
+        let client = crate::gateway::Client::new("http://gw".into(), "key".into()).unwrap();
+        let models = crate::gateway::ModelList { data: vec![] };
+        apply(&client, &models).unwrap();
+
+        let path = config_path();
+        let token = token_path();
+        assert!(path.exists());
+        assert!(token.exists());
+
+        // Verify that apply wrote a relocatable auth command, not an absolute path
+        let initial_content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !initial_content.contains(&dir.to_string_lossy().into_owned()),
+            "config.toml should not contain absolute paths: {initial_content}"
+        );
+        assert!(initial_content.contains(r#"cat "${CODEX_HOME:-$HOME/.codex}/floway-token""#));
+
+        // Hand-edit config.toml to add [model_providers.other] with a key and a [features] flag, plus a comment
+        let user_additions = r#"
+# User comment that must survive
+[model_providers.other]
+name = "Other Provider"
+"#;
+        let mut modified =
+            initial_content.replace("[features]\n", "[features]\nmy_custom_feature = true\n");
+        modified.push_str(user_additions);
+        std::fs::write(&path, modified).unwrap();
+
+        let res = unconfigure().unwrap();
+        assert!(res.is_some(), "unconfigure should report touched files");
+
+        // The file must survive because it has user config
+        assert!(path.exists(), "config.toml should still exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Foreign config and comments survive
+        assert!(content.contains("# User comment that must survive"));
+        assert!(
+            content.contains("model_providers.other")
+                || content.contains("[model_providers.other]")
+        );
+        assert!(content.contains("Other Provider"));
+        assert!(content.contains("my_custom_feature = true"));
+
+        // Managed keys and tables are gone
+        assert!(!content.contains("floway"));
+        assert!(!content.contains("model_provider ="));
+        assert!(!content.contains("suppress_unstable_features_warning"));
+        assert!(!content.contains("standalone_web_search"));
+        assert!(!content.contains("apps = false"));
+
+        // floway-token is gone
+        assert!(!token.exists(), "floway-token should be removed");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unconfigure_removes_floway_when_model_provider_switched() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-codex-test-2-{}", std::process::id()));
+        let codex_dir = dir.join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::env::set_var("CODEX_HOME", &codex_dir);
+
+        let client = crate::gateway::Client::new("http://gw".into(), "key".into()).unwrap();
+        let models = crate::gateway::ModelList { data: vec![] };
+        apply(&client, &models).unwrap();
+
+        let path = config_path();
+        let token = token_path();
+
+        // Reinstall/hand-edit: set model_provider = "openai" by hand
+        let initial_content = std::fs::read_to_string(&path).unwrap();
+        let modified = initial_content.replace(
+            r#"model_provider = "floway""#,
+            r#"model_provider = "openai""#,
+        );
+        std::fs::write(&path, modified).unwrap();
+
+        let res = unconfigure().unwrap();
+        assert!(res.is_some(), "unconfigure should succeed");
+
+        assert!(
+            path.exists(),
+            "config.toml should survive because model_provider = openai was preserved"
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(r#"model_provider = "openai""#));
+        assert!(!content.contains("floway"));
+        assert!(!content.contains("model_providers"));
+        assert!(!content.contains("features"));
+        assert!(!token.exists(), "floway-token should be removed");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

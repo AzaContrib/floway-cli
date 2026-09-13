@@ -29,8 +29,8 @@ pub struct Options {
 
 pub fn run(options: Options) -> Result<()> {
     let mut store = state::Store::load().unwrap_or_default();
-    let non_interactive =
-        options.non_interactive || (options.endpoint.is_some() && options.api_key.is_some() && options.agents.is_some());
+    let non_interactive = options.non_interactive
+        || (options.endpoint.is_some() && options.api_key.is_some() && options.agents.is_some());
 
     // Credential precedence: flags > SETUP_* harness env > saved state > prompt.
     let (endpoint, api_key) = resolve_credentials(&options, non_interactive, &store)?;
@@ -71,10 +71,7 @@ pub fn run(options: Options) -> Result<()> {
         store.add_agent(*agent);
     }
 
-    store.set_credentials(state::Credentials {
-        endpoint,
-        api_key,
-    });
+    store.set_credentials(state::Credentials { endpoint, api_key });
     store
         .save()
         .context("could not persist floway state; agent configuration may not survive")?;
@@ -94,20 +91,29 @@ fn resolve_credentials(
     let env_endpoint = normalize_endpoint(std::env::var("SETUP_ENDPOINT").ok().as_deref())?;
 
     let flag_key = options.api_key.clone().filter(|k| !k.is_empty());
-    let env_key = std::env::var("SETUP_API_KEY").ok().filter(|k| !k.is_empty());
+    let env_key = std::env::var("SETUP_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty());
 
-    let endpoint = match (flag_endpoint, env_endpoint, store.credentials().map(|c| c.endpoint.clone())) {
+    let endpoint = match (
+        flag_endpoint,
+        env_endpoint,
+        store.credentials().map(|c| c.endpoint.clone()),
+    ) {
         (Some(endpoint), _, _) | (_, Some(endpoint), _) | (_, _, Some(endpoint)) => endpoint,
         (None, None, None) => {
             if non_interactive {
                 bail!("no endpoint given; pass --endpoint or set SETUP_ENDPOINT");
             }
-            let raw = prompt_endpoint(None)?;
-            raw
+            prompt_endpoint(None)?
         }
     };
 
-    let api_key = match (flag_key, env_key, store.credentials().map(|c| c.api_key.clone())) {
+    let api_key = match (
+        flag_key,
+        env_key,
+        store.credentials().map(|c| c.api_key.clone()),
+    ) {
         (Some(key), _, _) | (_, Some(key), _) | (_, _, Some(key)) => key,
         (None, None, None) => {
             if non_interactive {
@@ -120,21 +126,24 @@ fn resolve_credentials(
     Ok((endpoint, api_key))
 }
 
-fn resolve_agents(options: &Options, _non_interactive: bool) -> Result<Vec<AgentKind>> {
+fn resolve_agents(options: &Options, non_interactive: bool) -> Result<Vec<AgentKind>> {
     // Explicit flag wins; else the FLOWAY_AGENTS env the install script and
     // the harness conventions use; else the interactive menu (which itself
     // handles the non-tty FLOWAY_AGENTS path).
     if let Some(list) = &options.agents {
         return parse_agent_list(list);
     }
-    if std::env::var("FLOWAY_AGENTS").is_ok() {
-        // menu::select_agents reads the env in its non-tty branch; in a TTY the
-        // env is still honored so scripts with a TTY behave identically.
-        if let Ok(list) = std::env::var("FLOWAY_AGENTS") {
-            if !list.trim().is_empty() {
-                return parse_agent_list(&list);
-            }
+    if let Ok(list) = std::env::var("FLOWAY_AGENTS") {
+        let trimmed = list.trim();
+        if !trimmed.is_empty() {
+            return parse_agent_list(trimmed);
         }
+        if non_interactive || menu::noninteractive() {
+            bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS=claude-code,codex,oh-my-pi,opencode,zed,vscode (or FLOWAY_AGENTS=all) for non-interactive use");
+        }
+    }
+    if non_interactive {
+        bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS=claude-code,codex,oh-my-pi,opencode,zed,vscode (or FLOWAY_AGENTS=all) for non-interactive use");
     }
     menu::select_agents("Which agentic frameworks should floway set up?", &[])
 }

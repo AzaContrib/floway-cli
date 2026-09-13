@@ -129,9 +129,6 @@ pub struct Reasoning {
 pub struct Effort {
     #[serde(default)]
     pub supported: Option<Vec<String>>,
-    #[serde(default)]
-    #[allow(dead_code)] // round-tripped from /v1/models, kept for completeness
-    pub default: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

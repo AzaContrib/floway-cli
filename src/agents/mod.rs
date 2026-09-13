@@ -54,24 +54,6 @@ impl AgentKind {
         }
     }
 
-    /// Human-readable list of the files this agent's Floway config lives in.
-    pub fn config_paths(self) -> Vec<String> {
-        match self {
-            AgentKind::ClaudeCode => vec![claude::settings_path().display().to_string()],
-            AgentKind::Codex => vec![
-                codex::config_path().display().to_string(),
-                codex::token_path().display().to_string(),
-            ],
-            AgentKind::Omp => vec![
-                harness::omp_paths().0.display().to_string(),
-                harness::omp_paths().1.display().to_string(),
-            ],
-            AgentKind::Opencode => vec![harness::opencode_path().display().to_string()],
-            AgentKind::Zed => vec![harness::zed_path().display().to_string()],
-            AgentKind::Vscode => vec![harness::vscode_path().display().to_string()],
-        }
-    }
-
     /// Fetch + convert + write. Returns a one-line summary of what was written.
     pub fn apply(self, client: &gateway::Client, models: &ModelList) -> Result<String> {
         match self {

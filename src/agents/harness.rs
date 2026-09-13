@@ -148,7 +148,9 @@ fn omp_model_config(model: &Model) -> Value {
             .clone()
             .unwrap_or_else(|| model.id.clone())),
     );
-    config.insert("reasoning".into(), json!(true));
+    if model.chat.reasoning.is_some() {
+        config.insert("reasoning".into(), json!(true));
+    }
     let input: Vec<&String> = model.chat.modalities.input.iter().collect();
     if !input.is_empty() {
         config.insert("input".into(), json!(model.chat.modalities.input));
@@ -170,18 +172,22 @@ fn omp_model_config(model: &Model) -> Value {
             || cache_write.is_some()
         {
             let mut cost = serde_json::Map::new();
-            if let Some(v) = input_tokens.and_then(rate_f64) {
-                cost.insert("input".into(), json!(v));
-            }
-            if let Some(v) = output_tokens.and_then(rate_f64) {
-                cost.insert("output".into(), json!(v));
-            }
-            if let Some(v) = cache_read.and_then(rate_f64) {
-                cost.insert("cacheRead".into(), json!(v));
-            }
-            if let Some(v) = cache_write.and_then(rate_f64) {
-                cost.insert("cacheWrite".into(), json!(v));
-            }
+            cost.insert(
+                "input".into(),
+                json!(input_tokens.and_then(rate_f64).unwrap_or(0.0)),
+            );
+            cost.insert(
+                "output".into(),
+                json!(output_tokens.and_then(rate_f64).unwrap_or(0.0)),
+            );
+            cost.insert(
+                "cacheRead".into(),
+                json!(cache_read.and_then(rate_f64).unwrap_or(0.0)),
+            );
+            cost.insert(
+                "cacheWrite".into(),
+                json!(cache_write.and_then(rate_f64).unwrap_or(0.0)),
+            );
             config.insert("cost".into(), Value::Object(cost));
         }
     }
@@ -609,4 +615,39 @@ fn unconfigure_json_provider(path: &std::path::Path, parent_path: &[&str]) -> bo
         return false;
     }
     json_doc::save(path, &doc, 0o600).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omp_model_config_cost_includes_all_required_fields() {
+        let model: Model = serde_json::from_value(json!({
+            "id": "test-model",
+            "pricing": {
+                "entries": [
+                    {
+                        "rates": {
+                            "input_tokens": "0.00000174",
+                            "output_tokens": "0.00000348",
+                            "input_cache_read_tokens": "0.0000000145"
+                        }
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        let cfg = omp_model_config(&model);
+        let cost = cfg
+            .get("cost")
+            .expect("cost should be present")
+            .as_object()
+            .unwrap();
+        assert_eq!(cost.get("input").and_then(Value::as_f64), Some(1.74));
+        assert_eq!(cost.get("output").and_then(Value::as_f64), Some(3.48));
+        assert_eq!(cost.get("cacheRead").and_then(Value::as_f64), Some(0.0145));
+        assert_eq!(cost.get("cacheWrite").and_then(Value::as_f64), Some(0.0));
+    }
 }
