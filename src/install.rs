@@ -19,7 +19,7 @@ pub struct Options {
     #[arg(long, value_name = "KEY")]
     pub api_key: Option<String>,
     /// Select agents without the menu: a comma list of ids
-    /// (claude-code,codex,oh-my-pi,opencode,zed,vscode) or `all`.
+    /// (claude-code,codex,oh-my-pi,opencode,zed,vscode,deepseek-harness) or `all`.
     #[arg(long, value_name = "LIST")]
     pub agents: Option<String>,
     /// Fail instead of prompting when information is missing.
@@ -139,11 +139,21 @@ fn resolve_agents(options: &Options, non_interactive: bool) -> Result<Vec<AgentK
             return parse_agent_list(trimmed);
         }
         if non_interactive || menu::noninteractive() {
-            bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS=claude-code,codex,oh-my-pi,opencode,zed,vscode (or FLOWAY_AGENTS=all) for non-interactive use");
+            let ids = crate::agents::ALL_AGENTS
+                .iter()
+                .map(|a| a.id())
+                .collect::<Vec<_>>()
+                .join(",");
+            bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS={ids} (or FLOWAY_AGENTS=all) for non-interactive use");
         }
     }
     if non_interactive {
-        bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS=claude-code,codex,oh-my-pi,opencode,zed,vscode (or FLOWAY_AGENTS=all) for non-interactive use");
+        let ids = crate::agents::ALL_AGENTS
+            .iter()
+            .map(|a| a.id())
+            .collect::<Vec<_>>()
+            .join(",");
+        bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS={ids} (or FLOWAY_AGENTS=all) for non-interactive use");
     }
     menu::select_agents("Which agentic frameworks should floway set up?", &[])
 }
@@ -159,14 +169,11 @@ fn parse_agent_list(list: &str) -> Result<Vec<AgentKind>> {
     let mut picked = Vec::new();
     for token in list.split(',').map(str::trim).filter(|t| !t.is_empty()) {
         let id = token.replace(' ', "-").to_lowercase();
-        let agent = crate::agents::ALL_AGENTS
-            .iter()
-            .find(|a| a.id() == id)
-            .or_else(|| {
-                crate::agents::ALL_AGENTS
-                    .iter()
-                    .find(|a| a.label().to_lowercase().replace(' ', "-") == id)
-            });
+        let agent = crate::agents::ALL_AGENTS.iter().find(|a| {
+            a.id() == id
+                || a.label().to_lowercase().replace(' ', "-") == id
+                || a.aliases().contains(&id.as_str())
+        });
         let agent = agent.ok_or_else(|| {
             anyhow::anyhow!(
                 "unknown agent id {token:?}; valid ids: {}",

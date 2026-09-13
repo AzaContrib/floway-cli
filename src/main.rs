@@ -6,6 +6,7 @@ mod gateway;
 mod install;
 mod json_doc;
 mod menu;
+mod pm;
 mod state;
 mod toml_doc;
 mod ui;
@@ -33,7 +34,7 @@ enum Command {
         #[arg(long, value_name = "KEY")]
         api_key: Option<String>,
         /// Select agents without the menu: a comma list of ids
-        /// (claude-code,codex,oh-my-pi,opencode,zed,vscode) or `all`.
+        /// (claude-code,codex,oh-my-pi,opencode,zed,vscode,deepseek-harness) or `all`.
         #[arg(long, value_name = "LIST")]
         agents: Option<String>,
         /// Fail instead of prompting when information is missing; also implied

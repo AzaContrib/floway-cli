@@ -38,11 +38,11 @@ pub fn select_agents(question: &str, preselected: &[AgentKind]) -> Result<Vec<Ag
         // Non-tty selection: FLOWAY_AGENTS=claude,codex,... or FLOWAY_AGENTS=all.
         let requested = std::env::var("FLOWAY_AGENTS").unwrap_or_default();
         let requested = requested.trim();
-        if requested.is_empty() {
-            bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS=claude-code,codex,oh-my-pi,opencode,zed,vscode (or FLOWAY_AGENTS=all) for non-interactive use");
-        }
         let all = crate::agents::ALL_AGENTS;
         let ids: Vec<String> = all.iter().map(|a| a.id().to_string()).collect();
+        if requested.is_empty() {
+            bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS={} (or FLOWAY_AGENTS=all) for non-interactive use", ids.join(","));
+        }
         if requested.eq_ignore_ascii_case("all") {
             return Ok(all.to_vec());
         }
@@ -53,9 +53,10 @@ pub fn select_agents(question: &str, preselected: &[AgentKind]) -> Result<Vec<Ag
             .filter(|t| !t.is_empty())
         {
             let id = token.replace(' ', "-").to_lowercase();
-            let agent = all.iter().find(|a| a.id() == id).or_else(|| {
-                all.iter()
-                    .find(|a| a.label().to_lowercase().replace(' ', "-") == id)
+            let agent = all.iter().find(|a| {
+                a.id() == id
+                    || a.label().to_lowercase().replace(' ', "-") == id
+                    || a.aliases().contains(&id.as_str())
             });
             match agent {
                 Some(agent) => {
@@ -71,7 +72,7 @@ pub fn select_agents(question: &str, preselected: &[AgentKind]) -> Result<Vec<Ag
 
     println!("{}", ui::bold(question));
     ui::flush();
-    let agents: &[AgentKind; 6] = &crate::agents::ALL_AGENTS;
+    let agents: &[AgentKind] = &crate::agents::ALL_AGENTS;
     let mut checked: Vec<bool> = agents
         .iter()
         .map(|agent| preselected.contains(agent))
@@ -92,7 +93,7 @@ impl Drop for RawModeGuard {
 }
 
 fn menu_loop(
-    agents: &[AgentKind; 6],
+    agents: &[AgentKind],
     checked: &mut [bool],
     cursor: &mut usize,
 ) -> Result<Vec<AgentKind>> {

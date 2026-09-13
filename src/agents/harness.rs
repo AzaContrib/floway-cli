@@ -1,9 +1,9 @@
-//! Harness agents: oh-my-pi, opencode, Zed, and VSCode. Rust ports of the
-//! four Floway Python converters (`floway-to-{omp,opencode,zed,vscode}.py`)
-//! plus native merge/unmerge writers replacing the bash `jq` merges.
+//! Harness agents: oh-my-pi, opencode, Zed, VSCode, and DeepSeek Harness.
+//! Rust ports of the Floway converters plus native merge/unmerge writers.
 //!
-//! Each writer touches only the `Floway` provider subtree it owns and leaves
-//! the rest of the document intact; unconfigure removes exactly that subtree.
+//! Each writer touches only the `Floway` (or `floway`) provider subtree it
+//! owns and leaves the rest of the document intact; unconfigure removes
+//! exactly that subtree.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -64,6 +64,17 @@ pub fn vscode_path() -> PathBuf {
     #[cfg(not(target_os = "macos"))]
     let base = PathBuf::from(&home).join(".config/Code/User");
     base.join("chatLanguageModels.json")
+}
+
+pub fn dsh_paths() -> (PathBuf, PathBuf) {
+    let dir = match std::env::var("DSH_CONFIG_DIR").or_else(|_| std::env::var("DSH_HOME")) {
+        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join(".dsh")
+        }
+    };
+    (dir.join("settings.yaml"), dir.join(".credentials.yaml"))
 }
 
 // ---------------------------------------------------------------------------
@@ -568,13 +579,142 @@ pub fn unconfigure_vscode() -> Result<Option<String>> {
 }
 
 // ---------------------------------------------------------------------------
+// DeepSeek Harness
+
+pub fn apply_dsh(client: &Client, models: &ModelList) -> Result<String> {
+    let (settings_path, credentials_path) = dsh_paths();
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut provider = serde_json::Map::new();
+    provider.insert("displayName".into(), json!("Floway"));
+    provider.insert("apiKeyEnv".into(), json!("FLOWAY_API_KEY"));
+    provider.insert("api".into(), json!("openai-responses"));
+    provider.insert(
+        "baseURL".into(),
+        json!(format!("{}/v1", client.endpoint().trim_end_matches('/'))),
+    );
+    provider.insert(
+        "models".into(),
+        Value::Array(
+            chat_models(models)
+                .iter()
+                .map(|m| dsh_model_config(m))
+                .collect(),
+        ),
+    );
+
+    let mut doc = crate::yaml_doc::load_or_new(&settings_path, "DeepSeek Harness settings")?;
+    let root = json_doc::ensure_object(&mut doc, "root")?;
+    let pi_ai = json_doc::ensure_object_in(root, "llm-pi-ai")?;
+    let providers = json_doc::ensure_object_in(pi_ai, "providers")?;
+    providers.insert("floway".into(), Value::Object(provider));
+
+    let settings_yaml = crate::yaml_doc::to_yaml(&doc)?;
+    crate::write_private_file(&settings_path, &settings_yaml)?;
+
+    let mut creds_doc =
+        crate::yaml_doc::load_or_new(&credentials_path, "DeepSeek Harness credentials")?;
+    let creds_root = json_doc::ensure_object(&mut creds_doc, "root")?;
+    creds_root.insert("FLOWAY_API_KEY".into(), json!(client.api_key()));
+    let creds_yaml = crate::yaml_doc::to_yaml(&creds_doc)?;
+    crate::write_private_file(&credentials_path, &creds_yaml)?;
+
+    Ok(format!(
+        "wrote {} and the key in {}",
+        settings_path.display(),
+        credentials_path.display()
+    ))
+}
+
+fn dsh_model_config(model: &Model) -> Value {
+    let mut config = serde_json::Map::new();
+    config.insert("id".into(), json!(model.id));
+    config.insert(
+        "name".into(),
+        json!(model
+            .display_name
+            .clone()
+            .unwrap_or_else(|| model.id.clone())),
+    );
+    let modalities = &model.chat.modalities.input;
+    if modalities.iter().any(|m| m != "text") {
+        config.insert("input".into(), json!(modalities));
+    }
+    if let Some(ctx) = model.limits.max_context_window_tokens {
+        config.insert("contextWindow".into(), json!(ctx));
+    }
+    if let Some(out) = model.limits.max_output_tokens {
+        config.insert("maxTokens".into(), json!(out));
+    }
+    if let Some(reasoning) = &model.chat.reasoning {
+        if let Some(supported) = reasoning.effort.as_ref().and_then(|e| e.supported.as_ref()) {
+            if !supported.is_empty() {
+                let mut efforts = serde_json::Map::new();
+                efforts.insert("off".into(), Value::Null);
+                for level in supported {
+                    efforts.insert(level.clone(), json!(level));
+                }
+                config.insert("reasoningEfforts".into(), Value::Object(efforts));
+            }
+        }
+    }
+    Value::Object(config)
+}
+
+pub fn unconfigure_dsh() -> Result<Option<String>> {
+    let (settings_path, credentials_path) = dsh_paths();
+    let mut touched = Vec::new();
+
+    if settings_path.exists() {
+        let text = std::fs::read_to_string(&settings_path)?;
+        if let Ok(Value::Object(mut doc)) = crate::yaml_doc::from_yaml(&text) {
+            if remove_provider_key(&mut doc, &["llm-pi-ai", "providers"], "floway") {
+                if doc.is_empty() {
+                    std::fs::remove_file(&settings_path)?;
+                } else {
+                    let body = crate::yaml_doc::to_yaml(&Value::Object(doc))?;
+                    crate::write_private_file(&settings_path, &body)?;
+                }
+                touched.push(settings_path.display().to_string());
+            }
+        }
+    }
+
+    if credentials_path.exists() {
+        let text = std::fs::read_to_string(&credentials_path)?;
+        if let Ok(Value::Object(mut doc)) = crate::yaml_doc::from_yaml(&text) {
+            if doc.remove("FLOWAY_API_KEY").is_some() {
+                if doc.is_empty() {
+                    std::fs::remove_file(&credentials_path)?;
+                } else {
+                    let body = crate::yaml_doc::to_yaml(&Value::Object(doc))?;
+                    crate::write_private_file(&credentials_path, &body)?;
+                }
+                touched.push(credentials_path.display().to_string());
+            }
+        }
+    }
+
+    if touched.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!("removed Floway from {}", touched.join(", "))))
+}
+
+// ---------------------------------------------------------------------------
 
 /// Remove the `Floway` key at `path[..]/key`, pruning now-empty parents and
 /// the `$schema` helper key opencode owns. Returns whether anything changed.
 fn remove_provider(doc: &mut serde_json::Map<String, Value>, path: &[&str]) -> bool {
+    remove_provider_key(doc, path, UPSTREAM)
+}
+
+fn remove_provider_key(doc: &mut serde_json::Map<String, Value>, path: &[&str], key: &str) -> bool {
     let mut changed = false;
     if path.is_empty() {
-        if doc.remove(UPSTREAM).is_some() {
+        if doc.remove(key).is_some() {
             changed = true;
         }
         // `$schema` was written by floway; drop it when the file is otherwise
@@ -586,7 +726,7 @@ fn remove_provider(doc: &mut serde_json::Map<String, Value>, path: &[&str]) -> b
     }
     if let Some(child) = doc.get_mut(path[0]) {
         if let Some(map) = child.as_object_mut() {
-            changed = remove_provider(map, &path[1..]);
+            changed = remove_provider_key(map, &path[1..], key);
             if map.is_empty() {
                 doc.remove(path[0]);
             }
@@ -621,6 +761,8 @@ fn unconfigure_json_provider(path: &std::path::Path, parent_path: &[&str]) -> bo
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn omp_model_config_cost_includes_all_required_fields() {
         let model: Model = serde_json::from_value(json!({
@@ -649,5 +791,174 @@ mod tests {
         assert_eq!(cost.get("output").and_then(Value::as_f64), Some(3.48));
         assert_eq!(cost.get("cacheRead").and_then(Value::as_f64), Some(0.0145));
         assert_eq!(cost.get("cacheWrite").and_then(Value::as_f64), Some(0.0));
+    }
+
+    #[test]
+    fn dsh_model_config_reasoning_and_modalities() {
+        let model: Model = serde_json::from_value(json!({
+            "id": "gpt-5.6",
+            "display_name": "GPT-5.6",
+            "kind": "chat",
+            "limits": {
+                "max_context_window_tokens": 400000,
+                "max_output_tokens": 100000
+            },
+            "chat": {
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
+                "reasoning": {
+                    "effort": {
+                        "supported": ["low", "medium", "high"],
+                        "default": "medium"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let cfg = dsh_model_config(&model);
+        assert_eq!(cfg.get("id").and_then(Value::as_str), Some("gpt-5.6"));
+        assert_eq!(cfg.get("name").and_then(Value::as_str), Some("GPT-5.6"));
+        assert_eq!(
+            cfg.get("contextWindow").and_then(Value::as_u64),
+            Some(400000)
+        );
+        assert_eq!(cfg.get("maxTokens").and_then(Value::as_u64), Some(100000));
+        assert_eq!(
+            cfg.get("input").and_then(Value::as_array).map(|a| a.len()),
+            Some(2)
+        );
+
+        let efforts = cfg
+            .get("reasoningEfforts")
+            .expect("reasoningEfforts should be present")
+            .as_object()
+            .unwrap();
+        assert!(efforts.contains_key("off"));
+        assert_eq!(efforts.get("off"), Some(&Value::Null));
+        assert_eq!(efforts.get("low").and_then(Value::as_str), Some("low"));
+        assert_eq!(efforts.get("medium").and_then(Value::as_str), Some("medium"));
+        assert_eq!(efforts.get("high").and_then(Value::as_str), Some("high"));
+        assert!(cfg.get("cost").is_none(), "dsh model config must not have cost");
+    }
+
+    #[test]
+    fn apply_then_unconfigure_dsh_round_trip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-dsh-e2e-{}", std::process::id()));
+        let dsh_dir = dir.join(".dsh");
+        std::fs::create_dir_all(&dsh_dir).unwrap();
+        std::env::set_var("DSH_CONFIG_DIR", &dsh_dir);
+
+        let client =
+            crate::gateway::Client::new("http://127.0.0.1:18099".into(), "test-key".into())
+                .unwrap();
+        let model: Model = serde_json::from_value(json!({
+            "id": "gpt-5.6",
+            "display_name": "GPT-5.6",
+            "kind": "chat",
+            "limits": {
+                "max_context_window_tokens": 400000,
+                "max_output_tokens": 100000
+            },
+            "chat": {
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
+                "reasoning": {
+                    "effort": {
+                        "supported": ["low", "medium", "high"],
+                        "default": "medium"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let models = crate::gateway::ModelList {
+            data: vec![model],
+        };
+
+        apply_dsh(&client, &models).unwrap();
+
+        let (settings_path, creds_path) = dsh_paths();
+        assert!(settings_path.exists(), "settings.yaml must exist");
+        assert!(creds_path.exists(), ".credentials.yaml must exist");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&creds_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "credentials file must be 0600");
+        }
+
+        // Verify content in settings.yaml
+        let settings_raw = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(settings_raw.contains("floway:"));
+        assert!(settings_raw.contains("baseURL: \"http://127.0.0.1:18099/v1\""));
+        assert!(settings_raw.contains("apiKeyEnv: FLOWAY_API_KEY"));
+        assert!(settings_raw.contains("api: openai-responses"));
+        assert!(settings_raw.contains("\"off\": null"));
+
+        // Verify credentials
+        let creds_raw = std::fs::read_to_string(&creds_path).unwrap();
+        assert!(creds_raw.contains("FLOWAY_API_KEY: test-key"));
+
+        // Inject foreign keys in settings.yaml and .credentials.yaml
+        let mut settings_val = crate::yaml_doc::from_yaml(&settings_raw).unwrap();
+        settings_val
+            .as_object_mut()
+            .unwrap()
+            .insert("custom_key".into(), json!("keep-me"));
+        let modified_settings = crate::yaml_doc::to_yaml(&settings_val).unwrap();
+        std::fs::write(&settings_path, modified_settings).unwrap();
+
+        let mut creds_val = crate::yaml_doc::from_yaml(&creds_raw).unwrap();
+        creds_val
+            .as_object_mut()
+            .unwrap()
+            .insert("OTHER_KEY".into(), json!("keep-secret"));
+        let modified_creds = crate::yaml_doc::to_yaml(&creds_val).unwrap();
+        std::fs::write(&creds_path, modified_creds).unwrap();
+
+        // Unconfigure
+        let unconf = unconfigure_dsh().unwrap();
+        assert!(unconf.is_some());
+
+        // Foreign keys must survive
+        assert!(settings_path.exists());
+        assert!(creds_path.exists());
+
+        let after_settings: Value =
+            crate::yaml_doc::from_yaml(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(
+            after_settings.get("custom_key").and_then(Value::as_str),
+            Some("keep-me")
+        );
+        assert!(after_settings.get("llm-pi-ai").is_none());
+
+        let after_creds: Value =
+            crate::yaml_doc::from_yaml(&std::fs::read_to_string(&creds_path).unwrap()).unwrap();
+        assert_eq!(
+            after_creds.get("OTHER_KEY").and_then(Value::as_str),
+            Some("keep-secret")
+        );
+        assert!(after_creds.get("FLOWAY_API_KEY").is_none());
+
+        // Second round trip without foreign keys: should delete files completely
+        let _ = std::fs::remove_file(&settings_path);
+        let _ = std::fs::remove_file(&creds_path);
+        apply_dsh(&client, &models).unwrap();
+        assert!(settings_path.exists());
+        assert!(creds_path.exists());
+
+        let unconf2 = unconfigure_dsh().unwrap();
+        assert!(unconf2.is_some());
+        assert!(
+            !settings_path.exists(),
+            "settings.yaml should be removed completely when only floway was configured"
+        );
+        assert!(
+            !creds_path.exists(),
+            ".credentials.yaml should be removed completely when only FLOWAY_API_KEY was configured"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

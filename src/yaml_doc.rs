@@ -85,9 +85,30 @@ fn emit_entry(prefix: &str, key: &str, value: &Value, out: &mut String) -> Resul
     Ok(())
 }
 
+/// Load a YAML document, or `{}` when the file does not exist. Rejects a
+/// present-but-invalid document so a corrupt config is never clobbered.
+pub fn load_or_new(path: &std::path::Path, label: &str) -> Result<Value> {
+    if !path.exists() {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("could not read {}", path.display()))?;
+    if raw.trim().is_empty() {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+    from_yaml(&raw).with_context(|| format!("{path:?} is not valid {label}"))
+}
+
 /// Quote a key unless it is a plain YAML identifier.
 fn yaml_key(key: &str) -> String {
+    let lower = key.to_ascii_lowercase();
+    let is_keyword = matches!(
+        lower.as_str(),
+        "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~" | "y" | "n"
+    );
     let plain = !key.is_empty()
+        && !is_keyword
+        && key.parse::<f64>().is_err()
         && key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.');
@@ -114,13 +135,12 @@ fn yaml_scalar(value: &Value) -> Result<String> {
                 ])
                 && !s.ends_with(' ')
                 && s.chars().all(|c| c != '\n' && c != '\t');
-            if plain
-                && !matches!(
-                    s.as_str(),
-                    "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~"
-                )
-                && s.parse::<f64>().is_err()
-            {
+            let lower = s.to_ascii_lowercase();
+            let is_keyword = matches!(
+                lower.as_str(),
+                "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~" | "y" | "n"
+            );
+            if plain && !is_keyword && s.parse::<f64>().is_err() {
                 s.to_string()
             } else {
                 serde_json::to_string(s)?
@@ -137,3 +157,29 @@ pub fn from_yaml(text: &str) -> Result<Value> {
         serde_yaml::from_str(text).with_context(|| "could not parse the YAML document")?;
     Ok(serde_json::to_value(value)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn quotes_yaml_keywords_as_keys_and_scalars() {
+        let doc = json!({
+            "reasoningEfforts": {
+                "off": null,
+                "low": "low",
+                "high": "on"
+            },
+            "input": ["text", "image"]
+        });
+        let yaml = to_yaml(&doc).unwrap();
+        assert!(yaml.contains("\"off\": null"));
+        assert!(yaml.contains("high: \"on\""));
+        assert!(yaml.contains("input: [text, image]"));
+
+        let parsed = from_yaml(&yaml).unwrap();
+        assert_eq!(parsed, doc);
+    }
+}
+

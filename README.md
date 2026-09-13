@@ -34,15 +34,16 @@ Non-interactive use: pipe the endpoint/key and set `FLOWAY_AGENTS`:
 
 ```bash
 printf 'https://gw.example\nfw-...-key\n' | FLOWAY_AGENTS=all floway install
-FLOWAY_AGENTS=claude-code,codex floway install   # subset; ids: claude-code codex oh-my-pi opencode zed vscode
+FLOWAY_AGENTS=claude-code,codex floway install   # subset; ids: claude-code codex oh-my-pi opencode zed vscode deepseek-harness
 ```
 
 ### `floway update`
 
 Re-fetches the model list from the gateway and re-applies configuration for
 every previously-installed agent — picking up new/renamed/removed models.
-Prints each agent's own update command (e.g. `claude update`,
-`npm i -g @openai/codex@latest`) for updating the agent programs themselves.
+Prints each agent's own update command (automatically detecting whether
+`bun`, `pnpm`, `yarn`, or `npm` was used or is available on PATH; override via
+`FLOWAY_PACKAGE_MANAGER`) for updating the agent programs themselves.
 
 ### `floway uninstall`
 
@@ -60,6 +61,7 @@ provider tokens, and the recorded key. Unrelated settings survive.
 | opencode | `~/.config/opencode/opencode.json` — `provider.Floway` with per-model limits, reasoning variants, costs |
 | Zed | `~/.config/zed/global_settings.json` — `language_models.openai_compatible.Floway` |
 | VSCode | user-profile `chatLanguageModels.json` — a `Floway` custom-endpoint model group |
+| DeepSeek Harness | `~/.dsh/settings.yaml` — `llm-pi-ai.providers.floway` (responses API, reasoning efforts, vision) + key in `~/.dsh/.credentials.yaml` (0600) |
 
 All writes are transactional (same-directory stage + rename), owner-only
 (0600 for anything carrying the API key), and preserve unrelated keys,
