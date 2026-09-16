@@ -54,7 +54,7 @@ ARCH="$(uname -m)"
 case "$OS" in
   Linux) OS_PART='unknown-linux-musl' ;;
   Darwin) OS_PART='apple-darwin' ;;
-  *) error "unsupported operating system: $OS (this installer supports macOS and Linux; on Windows use cargo install --git https://github.com/$REPO)" ;;
+  *) error "unsupported operating system: $OS (this installer supports macOS and Linux; on Windows use install.ps1: irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex)" ;;
 esac
 case "$ARCH" in
   x86_64|amd64) ARCH_PART='x86_64' ;;

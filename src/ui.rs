@@ -1,7 +1,9 @@
 //! ANSI colour helpers and stdin prompts. Respects NO_COLOR and non-TTY.
 
 use anyhow::{Context, Result};
-use std::io::{BufRead, IsTerminal, Write};
+#[cfg(unix)]
+use std::io::BufRead;
+use std::io::{IsTerminal, Write};
 
 fn colour(code: &str, text: &str) -> String {
     if std::env::var("NO_COLOR")

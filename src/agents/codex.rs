@@ -22,7 +22,7 @@ pub fn codex_home() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = crate::fs_util::home_dir();
     PathBuf::from(home).join(".codex")
 }
 
@@ -65,7 +65,27 @@ pub fn apply(client: &Client, models: &ModelList) -> Result<String> {
     floway["base_url"] = toml_edit::value(format!("{}/azure-api.codex", client.endpoint()));
     // Command auth opts the provider into online model refresh; the actor
     // marker enables Codex's client-owned search and image extensions.
-    floway["auth"] = toml_edit::value(r#"cat "${CODEX_HOME:-$HOME/.codex}/floway-token""#);
+    #[cfg(windows)]
+    {
+        let mut auth = toml_edit::InlineTable::new();
+        auth.insert("command", "powershell".into());
+        let mut args = toml_edit::Array::new();
+        args.push("-NoProfile");
+        args.push("-Command");
+        args.push(r#"$h = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }; [IO.File]::ReadAllText((Join-Path $h 'floway-token'))"#);
+        auth.insert("args", toml_edit::Value::Array(args));
+        floway["auth"] = toml_edit::value(toml_edit::Value::InlineTable(auth));
+    }
+    #[cfg(not(windows))]
+    {
+        let mut auth = toml_edit::InlineTable::new();
+        auth.insert("command", "sh".into());
+        let mut args = toml_edit::Array::new();
+        args.push("-c");
+        args.push(r#"cat "${CODEX_HOME:-$HOME/.codex}/floway-token""#);
+        auth.insert("args", toml_edit::Value::Array(args));
+        floway["auth"] = toml_edit::value(toml_edit::Value::InlineTable(auth));
+    }
     floway["wire_api"] = toml_edit::value("responses");
     floway["supports_websockets"] = toml_edit::value(true);
     let mut headers = toml_edit::Table::new();

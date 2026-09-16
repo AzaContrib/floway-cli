@@ -93,14 +93,19 @@ fn state_path() -> PathBuf {
             return PathBuf::from(dir).join("state.json");
         }
     }
-    let base = match std::env::var("XDG_CONFIG_HOME") {
-        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => match std::env::var("HOME") {
-            Ok(home) if !home.is_empty() => PathBuf::from(home).join(".config"),
-            _ => PathBuf::from("."),
-        },
-    };
-    base.join("floway-cli").join("state.json")
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("floway-cli").join("state.json");
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        if !appdata.is_empty() {
+            return PathBuf::from(appdata).join("floway-cli").join("state.json");
+        }
+    }
+    let home = crate::fs_util::home_dir();
+    home.join(".config").join("floway-cli").join("state.json")
 }
 
 #[cfg(test)]

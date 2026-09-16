@@ -23,8 +23,8 @@ pub fn omp_paths() -> (PathBuf, PathBuf) {
     let dir = match std::env::var("OMP_CONFIG_DIR") {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            PathBuf::from(home).join(".omp").join("agent")
+            let home = crate::fs_util::home_dir();
+            home.join(".omp").join("agent")
         }
     };
     (dir.join("models.yml"), dir.join(".env"))
@@ -34,22 +34,31 @@ pub fn opencode_path() -> PathBuf {
     let dir = match std::env::var("OPENCODE_CONFIG_DIR") {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            PathBuf::from(home).join(".config").join("opencode")
+            let home = crate::fs_util::home_dir();
+            home.join(".config").join("opencode")
         }
     };
     dir.join("opencode.json")
 }
 
 pub fn zed_path() -> PathBuf {
-    let dir = match std::env::var("ZED_CONFIG_DIR") {
-        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            PathBuf::from(home).join(".config").join("zed")
+    if let Ok(dir) = std::env::var("ZED_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("global_settings.json");
         }
-    };
-    dir.join("global_settings.json")
+    }
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| crate::fs_util::home_dir().join("AppData").join("Roaming"));
+        appdata.join("Zed").join("global_settings.json")
+    }
+    #[cfg(not(windows))]
+    {
+        let home = crate::fs_util::home_dir();
+        home.join(".config").join("zed").join("global_settings.json")
+    }
 }
 
 pub fn vscode_path() -> PathBuf {
@@ -58,11 +67,18 @@ pub fn vscode_path() -> PathBuf {
             return PathBuf::from(dir).join("chatLanguageModels.json");
         }
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = crate::fs_util::home_dir();
+    #[cfg(windows)]
+    let base = {
+        let appdata = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join("AppData").join("Roaming"));
+        appdata.join("Code").join("User")
+    };
     #[cfg(target_os = "macos")]
-    let base = PathBuf::from(&home).join("Library/Application Support/Code/User");
-    #[cfg(not(target_os = "macos"))]
-    let base = PathBuf::from(&home).join(".config/Code/User");
+    let base = home.join("Library/Application Support/Code/User");
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let base = home.join(".config/Code/User");
     base.join("chatLanguageModels.json")
 }
 
@@ -70,8 +86,8 @@ pub fn dsh_paths() -> (PathBuf, PathBuf) {
     let dir = match std::env::var("DSH_CONFIG_DIR").or_else(|_| std::env::var("DSH_HOME")) {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            PathBuf::from(home).join(".dsh")
+            let home = crate::fs_util::home_dir();
+            home.join(".dsh")
         }
     };
     (dir.join("settings.yaml"), dir.join(".credentials.yaml"))

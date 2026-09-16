@@ -9,7 +9,29 @@ use std::path::Path;
 /// file is recognizable to the owning app.
 /// On Unix, the stage file is created with the requested `mode` before writing,
 /// avoiding permission windows.
-pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+/// Resolve the user's home directory.
+/// Honors `HOME` first (used on Unix and in tests), then `USERPROFILE` (standard on Windows).
+/// Defaults to `"."` if neither is set.
+pub fn home_dir() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return std::path::PathBuf::from(home);
+        }
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        if !profile.is_empty() {
+            return std::path::PathBuf::from(profile);
+        }
+    }
+    std::path::PathBuf::from(".")
+}
+
+/// Atomically write `bytes` to `path` via a same-directory stage file and rename.
+/// Preserves the file extension in `<stem>.floway-stage.<pid>.<ext>` so a stale stage
+/// file is recognizable to the owning app.
+/// On Unix, the stage file is created with the requested `mode` before writing,
+/// avoiding permission windows.
+pub fn write_atomic(path: &Path, bytes: &[u8], #[allow(unused_variables)] mode: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("could not create directory {}", parent.display()))?;
@@ -59,3 +81,37 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         .with_context(|| format!("could not replace {}", path.display()))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn home_dir_prefers_home_then_userprofile() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        let orig_profile = std::env::var("USERPROFILE").ok();
+
+        std::env::set_var("HOME", "/custom/home");
+        std::env::set_var("USERPROFILE", "C:\\Users\\Custom");
+        assert_eq!(home_dir(), std::path::PathBuf::from("/custom/home"));
+
+        std::env::remove_var("HOME");
+        assert_eq!(home_dir(), std::path::PathBuf::from("C:\\Users\\Custom"));
+
+        std::env::remove_var("USERPROFILE");
+        assert_eq!(home_dir(), std::path::PathBuf::from("."));
+
+        match orig_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        match orig_profile {
+            Some(p) => std::env::set_var("USERPROFILE", p),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+    }
+}
+

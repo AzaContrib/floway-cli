@@ -35,8 +35,8 @@ pub fn settings_path() -> PathBuf {
             return PathBuf::from(dir).join("settings.json");
         }
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".claude").join("settings.json")
+    let home = crate::fs_util::home_dir();
+    home.join(".claude").join("settings.json")
 }
 
 pub fn apply(client: &Client, _models: &ModelList) -> Result<String> {
