@@ -99,6 +99,7 @@ Known rough edges (don't propagate; fix opportunistically only if asked): `FLOWA
 | `src/agents/harness.rs` | omp/opencode/zed/vscode/dsh writers; each owns only its provider subtree |
 | `src/pm.rs` | Node.js/Bun package manager detection (`pnpm`, `bun`, `yarn`, `npm`) for agent self-update commands |
 | `src/json_doc.rs` | canonical JSON read-modify-write: `load_or_new` (rejects corrupt JSON), `ensure_object*`, `save` |
+| `src/self_update.rs` | binary self-update: GitHub release resolution, checksum verification, atomic swap |
 | `src/yaml_doc.rs` | minimal hand-rolled YAML emitter + `serde_yaml` parse; used for oh-my-pi `models.yml` and DeepSeek Harness configs |
 | `src/toml_doc.rs` | stage+rename save for `toml_edit` docs (no 0600 — the token file carries the secret) |
 | `src/menu.rs` / `src/ui.rs` | crossterm checkbox menu, y/n confirm; colors/prompts, termios echo-off (`unsafe` libc — the only `unsafe` in the crate) |

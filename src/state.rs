@@ -22,6 +22,9 @@ pub struct State {
     /// Agent ids previously configured, in first-install order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     agents: Vec<AgentKind>,
+    /// Last agent selection made in the installer menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_selected: Option<Vec<AgentKind>>,
 }
 
 pub struct Store {
@@ -76,6 +79,18 @@ impl Store {
         self.state.agents.clone()
     }
 
+    pub fn selected_agents(&self) -> Vec<AgentKind> {
+        self.state
+            .last_selected
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| self.state.agents.clone())
+    }
+
+    pub fn set_last_selected(&mut self, agents: Vec<AgentKind>) {
+        self.state.last_selected = Some(agents);
+    }
+
     pub fn add_agent(&mut self, agent: AgentKind) {
         if !self.state.agents.contains(&agent) {
             self.state.agents.push(agent);
@@ -84,6 +99,9 @@ impl Store {
 
     pub fn remove_agent(&mut self, agent: &AgentKind) {
         self.state.agents.retain(|a| a != agent);
+        if let Some(ref mut last) = self.state.last_selected {
+            last.retain(|a| a != agent);
+        }
     }
 }
 
@@ -126,6 +144,39 @@ mod tests {
         assert_eq!(
             state_alias.agents[0],
             crate::agents::AgentKind::DeepSeekHarness
+        );
+    }
+
+    #[test]
+    fn remembers_last_selected_agents_and_falls_back_to_installed() {
+        let mut store = Store::default();
+        assert!(store.selected_agents().is_empty());
+
+        store.add_agent(crate::agents::AgentKind::Codex);
+        assert_eq!(store.selected_agents(), vec![crate::agents::AgentKind::Codex]);
+
+        store.set_last_selected(vec![
+            crate::agents::AgentKind::ClaudeCode,
+            crate::agents::AgentKind::Zed,
+        ]);
+        assert_eq!(
+            store.selected_agents(),
+            vec![
+                crate::agents::AgentKind::ClaudeCode,
+                crate::agents::AgentKind::Zed
+            ]
+        );
+
+        store.remove_agent(&crate::agents::AgentKind::ClaudeCode);
+        assert_eq!(store.selected_agents(), vec![crate::agents::AgentKind::Zed]);
+        assert_eq!(store.installed_agents(), vec![crate::agents::AgentKind::Codex]);
+
+        // JSON serialization round-trip preserves last_selected
+        let json = serde_json::to_string(&store.state).unwrap();
+        let loaded: State = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            loaded.last_selected,
+            Some(vec![crate::agents::AgentKind::Zed])
         );
     }
 }

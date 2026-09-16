@@ -7,6 +7,7 @@ mod install;
 mod json_doc;
 mod menu;
 mod pm;
+mod self_update;
 mod state;
 mod toml_doc;
 mod ui;
@@ -43,12 +44,20 @@ enum Command {
         non_interactive: bool,
     },
     /// Re-fetch the model list and re-apply configuration for installed agents.
-    Update,
+    Update {
+        /// Update the floway binary itself instead of agent configurations.
+        #[arg(long = "self")]
+        self_update: bool,
+    },
+    /// Update the floway binary to the latest (or specified) release.
+    #[command(name = "self-update")]
+    SelfUpdate(self_update::Options),
     /// Remove Floway configuration from every previously-configured agent.
     Uninstall,
 }
 
 fn main() {
+    self_update::cleanup_old_binary();
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
         std::process::exit(1);
@@ -72,8 +81,16 @@ fn run() -> Result<()> {
             })?;
             Ok(())
         }
-        Some(Command::Update) => {
-            update_cmd()?;
+        Some(Command::Update { self_update }) => {
+            if self_update {
+                self_update::run(self_update::Options::default())?;
+            } else {
+                update_cmd()?;
+            }
+            Ok(())
+        }
+        Some(Command::SelfUpdate(options)) => {
+            self_update::run(options)?;
             Ok(())
         }
         Some(Command::Uninstall) => {
@@ -143,6 +160,12 @@ fn update_cmd() -> Result<()> {
             println!("  {}", ui::dim(&line));
         }
     }
+
+    println!();
+    println!(
+        "{}",
+        ui::dim("To update the floway binary itself, run `floway self-update`.")
+    );
 
     store.save()?;
     if any_failed {

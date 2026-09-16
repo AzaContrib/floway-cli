@@ -45,6 +45,21 @@ Prints each agent's own update command (automatically detecting whether
 `bun`, `pnpm`, `yarn`, or `npm` was used or is available on PATH; override via
 `FLOWAY_PACKAGE_MANAGER`) for updating the agent programs themselves.
 
+Pass `--self` to update the `floway` binary itself instead of agent configs.
+
+### `floway self-update`
+
+Updates the `floway` binary by downloading the official release for the
+current platform from GitHub Releases, verifying its SHA-256 checksum, and
+atomically replacing the running executable:
+
+```bash
+floway self-update          # update to the latest release
+floway self-update --check  # check if a newer release is available
+floway self-update --version v0.2.0  # install a specific version
+floway self-update --force  # reinstall even if already on the latest version
+```
+
 ### `floway uninstall`
 
 Lists previously-installed agents and removes exactly the Floway-managed

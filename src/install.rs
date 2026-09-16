@@ -36,7 +36,7 @@ pub fn run(options: Options) -> Result<()> {
     let (endpoint, api_key) = resolve_credentials(&options, non_interactive, &store)?;
 
     // Agent selection precedence: --agents flag > FLOWAY_AGENTS env > menu.
-    let selected = resolve_agents(&options, non_interactive)?;
+    let selected = resolve_agents(&options, non_interactive, &store)?;
 
     // Fail before touching any agent when the credentials or gateway are bad.
     print!("Verifying the endpoint and key … ");
@@ -71,6 +71,7 @@ pub fn run(options: Options) -> Result<()> {
         store.add_agent(*agent);
     }
 
+    store.set_last_selected(selected);
     store.set_credentials(state::Credentials { endpoint, api_key });
     store
         .save()
@@ -126,7 +127,11 @@ fn resolve_credentials(
     Ok((endpoint, api_key))
 }
 
-fn resolve_agents(options: &Options, non_interactive: bool) -> Result<Vec<AgentKind>> {
+fn resolve_agents(
+    options: &Options,
+    non_interactive: bool,
+    store: &state::Store,
+) -> Result<Vec<AgentKind>> {
     // Explicit flag wins; else the FLOWAY_AGENTS env the install script and
     // the harness conventions use; else the interactive menu (which itself
     // handles the non-tty FLOWAY_AGENTS path).
@@ -155,7 +160,8 @@ fn resolve_agents(options: &Options, non_interactive: bool) -> Result<Vec<AgentK
             .join(",");
         bail!("an interactive terminal is required to choose agents; set FLOWAY_AGENTS={ids} (or FLOWAY_AGENTS=all) for non-interactive use");
     }
-    menu::select_agents("Which agentic frameworks should floway set up?", &[])
+    let preselected = store.selected_agents();
+    menu::select_agents("Which agentic frameworks should floway set up?", &preselected)
 }
 
 fn parse_agent_list(list: &str) -> Result<Vec<AgentKind>> {

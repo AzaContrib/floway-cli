@@ -132,9 +132,16 @@ pub fn apply_omp(client: &Client, models: &ModelList) -> Result<String> {
     // The omp provider references the key by env name; the real token is
     // staged into the agent directory's .env, which oh-my-pi loads eagerly.
     let (models_path, env_path) = omp_paths();
-    std::fs::create_dir_all(models_path.parent().unwrap())?;
+    if let Some(parent) = models_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
-    let yaml = omp_settings_yaml(&provider)?;
+    let mut doc = crate::yaml_doc::load_or_new(&models_path, "oh-my-pi models")?;
+    let root = json_doc::ensure_object(&mut doc, "root")?;
+    let providers = json_doc::ensure_object_in(root, "providers")?;
+    providers.insert(UPSTREAM.into(), Value::Object(provider));
+
+    let yaml = crate::yaml_doc::to_yaml(&doc)?;
     crate::write_private_file(&models_path, &yaml)?;
 
     // Preserve unrelated .env lines, replacing any prior FLOWAY_API_KEY entry.
@@ -222,12 +229,6 @@ fn omp_model_config(model: &Model) -> Value {
     Value::Object(config)
 }
 
-/// Emit `providers: { Floway: {...} }` YAML matching PyYAML's safe_dump block
-// style closely enough for oh-my-pi's parser.
-fn omp_settings_yaml(provider: &serde_json::Map<String, Value>) -> Result<String> {
-    let settings = json!({ "providers": { UPSTREAM: Value::Object(provider.clone()) } });
-    crate::yaml_doc::to_yaml(&settings)
-}
 
 pub fn unconfigure_omp() -> Result<Option<String>> {
     let (models_path, env_path) = omp_paths();
@@ -974,6 +975,89 @@ mod tests {
             !creds_path.exists(),
             ".credentials.yaml should be removed completely when only FLOWAY_API_KEY was configured"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn test_model() -> Model {
+        serde_json::from_value(json!({
+            "id": "gpt-5.6",
+            "display_name": "GPT-5.6",
+            "kind": "chat",
+            "limits": {
+                "max_context_window_tokens": 400000,
+                "max_output_tokens": 100000
+            },
+            "chat": {
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
+                "reasoning": {
+                    "effort": {
+                        "supported": ["low", "medium", "high"],
+                        "default": "medium"
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn apply_then_unconfigure_omp_round_trip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-omp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("OMP_CONFIG_DIR", &dir);
+
+        let client = Client::new("http://gw.example".into(), "test-key".into()).unwrap();
+        let models = ModelList {
+            data: vec![test_model()],
+        };
+
+        apply_omp(&client, &models).unwrap();
+
+        let (models_path, env_path) = omp_paths();
+        assert!(models_path.exists());
+        assert!(env_path.exists());
+
+        // Inject foreign settings into both models.yml and .env
+        let models_val: Value =
+            crate::yaml_doc::from_yaml(&std::fs::read_to_string(&models_path).unwrap()).unwrap();
+        let mut models_val = models_val;
+        models_val
+            .get_mut("providers")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("OtherProvider".into(), json!({ "baseUrl": "http://other" }));
+        let modified_models = crate::yaml_doc::to_yaml(&models_val).unwrap();
+        std::fs::write(&models_path, modified_models).unwrap();
+
+        let mut env_content = std::fs::read_to_string(&env_path).unwrap();
+        env_content.push_str("OTHER_ENV=val\n");
+        std::fs::write(&env_path, env_content).unwrap();
+
+        // Re-apply (update) must preserve foreign provider and env
+        apply_omp(&client, &models).unwrap();
+        let after_update_models = std::fs::read_to_string(&models_path).unwrap();
+        assert!(after_update_models.contains("OtherProvider"));
+        assert!(after_update_models.contains("Floway"));
+        let after_update_env = std::fs::read_to_string(&env_path).unwrap();
+        assert!(after_update_env.contains("OTHER_ENV=val"));
+        assert!(after_update_env.contains("FLOWAY_API_KEY="));
+
+        // Unconfigure
+        let unconf = unconfigure_omp().unwrap();
+        assert!(unconf.is_some());
+
+        // Foreign provider survives, Floway removed
+        assert!(models_path.exists());
+        assert!(env_path.exists());
+        let after_unconf_models = std::fs::read_to_string(&models_path).unwrap();
+        assert!(after_unconf_models.contains("OtherProvider"));
+        assert!(!after_unconf_models.contains("Floway"));
+        let after_unconf_env = std::fs::read_to_string(&env_path).unwrap();
+        assert!(after_unconf_env.contains("OTHER_ENV=val"));
+        assert!(!after_unconf_env.contains("FLOWAY_API_KEY="));
 
         std::fs::remove_dir_all(&dir).ok();
     }
