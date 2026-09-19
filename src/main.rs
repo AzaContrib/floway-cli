@@ -35,7 +35,7 @@ enum Command {
         #[arg(long, value_name = "KEY")]
         api_key: Option<String>,
         /// Select agents without the menu: a comma list of ids
-        /// (claude-code,codex,oh-my-pi,opencode,zed,vscode,deepseek-harness) or `all`.
+        /// (claude-code,codex,oh-my-pi,pi,opencode,zed,vscode,deepseek-harness) or `all`.
         #[arg(long, value_name = "LIST")]
         agents: Option<String>,
         /// Fail instead of prompting when information is missing; also implied
@@ -207,6 +207,9 @@ fn uninstall_cmd() -> Result<()> {
                 any_failed = true;
                 println!("{}", ui::red("failed"));
                 eprintln!("  {error:#}");
+                // Keep the record: the agent still holds Floway configuration
+                // (possibly the API key), so a later run must be able to retry.
+                continue;
             }
         }
         store.remove_agent(&agent);

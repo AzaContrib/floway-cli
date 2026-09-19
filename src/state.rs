@@ -132,18 +132,23 @@ mod tests {
 
     #[test]
     fn parses_kebab_case_agent_ids() {
-        let raw = r#"{"credentials":{"endpoint":"http://e","api_key":"k"},"agents":["claude-code","codex","omp","opencode","zed","vscode","deepseek-harness"]}"#;
+        let raw = r#"{"credentials":{"endpoint":"http://e","api_key":"k"},"agents":["claude-code","codex","omp","pi","opencode","zed","vscode","deepseek-harness"]}"#;
         let state: State = serde_json::from_str(raw).unwrap();
-        assert_eq!(state.agents.len(), 7);
+        assert_eq!(state.agents.len(), 8);
         assert_eq!(state.agents[0], crate::agents::AgentKind::ClaudeCode);
-        assert_eq!(state.agents[6], crate::agents::AgentKind::DeepSeekHarness);
+        assert_eq!(state.agents[3], crate::agents::AgentKind::Pi);
+        assert_eq!(state.agents[7], crate::agents::AgentKind::DeepSeekHarness);
 
-        // Verify dsh alias deserializes to DeepSeekHarness
-        let raw_alias = r#"{"agents":["dsh"]}"#;
+        // Verify dsh and pi-coding-agent aliases deserialize
+        let raw_alias = r#"{"agents":["dsh","pi-coding-agent"]}"#;
         let state_alias: State = serde_json::from_str(raw_alias).unwrap();
         assert_eq!(
             state_alias.agents[0],
             crate::agents::AgentKind::DeepSeekHarness
+        );
+        assert_eq!(
+            state_alias.agents[1],
+            crate::agents::AgentKind::Pi
         );
     }
 

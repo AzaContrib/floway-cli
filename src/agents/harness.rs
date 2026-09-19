@@ -1,4 +1,4 @@
-//! Harness agents: oh-my-pi, opencode, Zed, VSCode, and DeepSeek Harness.
+//! Harness agents: oh-my-pi, Pi, opencode, Zed, VSCode, and DeepSeek Harness.
 //! Rust ports of the Floway converters plus native merge/unmerge writers.
 //!
 //! Each writer touches only the `Floway` (or `floway`) provider subtree it
@@ -19,15 +19,58 @@ const DEFAULT_MAX_OUTPUT: u64 = 65_536;
 // ---------------------------------------------------------------------------
 // paths
 
+/// Read a config-dir environment override: trimmed, with an empty value
+/// treated as unset.
+fn env_dir(name: &str) -> Option<PathBuf> {
+    let raw = std::env::var(name).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(raw))
+}
+
+/// Expand a leading `~`/`~/` the way Pi's `expandTildePath` does. oh-my-pi
+/// resolves its override with `path.resolve`, which does *not* expand `~`, so
+/// only the Pi writer applies this.
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return crate::fs_util::home_dir();
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return crate::fs_util::home_dir().join(rest);
+    }
+    path
+}
+
 pub fn omp_paths() -> (PathBuf, PathBuf) {
-    let dir = match std::env::var("OMP_CONFIG_DIR") {
-        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => {
+    // oh-my-pi derives its agent dir from `PI_CODING_AGENT_DIR` and its config
+    // root from `PI_CONFIG_DIR` (a dirname joined onto `$HOME`, default
+    // `.omp`). It never reads `OMP_CONFIG_DIR`.
+    let dir = match env_dir("PI_CODING_AGENT_DIR") {
+        Some(dir) => dir,
+        None => {
             let home = crate::fs_util::home_dir();
-            home.join(".omp").join("agent")
+            match env_dir("PI_CONFIG_DIR") {
+                Some(root) => home.join(root).join("agent"),
+                None => home.join(".omp").join("agent"),
+            }
         }
     };
     (dir.join("models.yml"), dir.join(".env"))
+}
+
+/// `~/.pi/agent/models.json`, honoring Pi's only config-dir override.
+/// Pi reads `PI_CODING_AGENT_DIR` (the env name it derives from its package
+/// `piConfig.name`) and expands a leading `~` itself; `PI_CONFIG_DIR` is
+/// oh-my-pi's variable and is deliberately not consulted here.
+pub fn pi_path() -> PathBuf {
+    if let Some(dir) = env_dir("PI_CODING_AGENT_DIR") {
+        return expand_tilde(dir).join("models.json");
+    }
+    let home = crate::fs_util::home_dir();
+    home.join(".pi").join("agent").join("models.json")
 }
 
 pub fn opencode_path() -> PathBuf {
@@ -273,6 +316,123 @@ pub fn unconfigure_omp() -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(format!("removed Floway from {}", touched.join(", "))))
+}
+
+// ---------------------------------------------------------------------------
+// Pi
+
+/// Escape a literal for Pi's config-value syntax, where `$VAR`/`${VAR}`
+/// interpolate, `!cmd` executes a shell command, `$$` emits `$`, and `$!`
+/// emits `!`. Without this, a custom API key containing `$` reads as a missing
+/// env var (Pi then reports the provider as unauthenticated) and a key
+/// starting with `!` would be run as a command.
+fn pi_config_value(literal: &str) -> String {
+    let mut escaped = literal.replace('$', "$$");
+    if escaped.starts_with('!') {
+        escaped.replace_range(..1, "$!");
+    }
+    escaped
+}
+
+/// A Pi model entry. Pi validates strictly (`name`/`id` need at least one
+/// character) and drops *every* provider in the file on any schema error, so
+/// blank display names fall back to the model id and nameless ids are skipped.
+fn pi_model_config(model: &Model) -> Option<Value> {
+    if model.id.is_empty() {
+        return None;
+    }
+    let mut config = serde_json::Map::new();
+    config.insert("id".into(), json!(model.id));
+    let name = model
+        .display_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&model.id);
+    config.insert("name".into(), json!(name));
+    if model.chat.reasoning.is_some() {
+        config.insert("reasoning".into(), json!(true));
+    }
+    let input: Vec<&String> = model.chat.modalities.input.iter().collect();
+    if !input.is_empty() {
+        config.insert("input".into(), json!(model.chat.modalities.input));
+    }
+    if let Some(ctx) = model.limits.max_context_window_tokens {
+        config.insert("contextWindow".into(), json!(ctx));
+    }
+    if let Some(out) = model.limits.max_output_tokens {
+        config.insert("maxTokens".into(), json!(out));
+    }
+    if let Some(rates) = default_rates(model) {
+        let mut cost = serde_json::Map::new();
+        for (key, value) in [
+            ("input", rates.input_tokens.as_deref()),
+            ("output", rates.output_tokens.as_deref()),
+            ("cacheRead", rates.input_cache_read_tokens.as_deref()),
+            ("cacheWrite", rates.input_cache_write_tokens.as_deref()),
+        ] {
+            cost.insert(key.into(), json!(value.and_then(rate_f64).unwrap_or(0.0)));
+        }
+        config.insert("cost".into(), Value::Object(cost));
+    }
+    Some(Value::Object(config))
+}
+
+pub fn apply_pi(client: &Client, models: &ModelList) -> Result<String> {
+    let path = pi_path();
+    // Pi accepts the JSONC superset (comments, trailing commas, BOM); read the
+    // same superset so a file Pi can load is never rejected here.
+    let mut doc = json_doc::load_or_new_jsonc(&path, "Pi models")?;
+    // Pi requires the `providers` key to be present at the top level.
+    let root = json_doc::ensure_object(&mut doc, "root")?;
+    let providers = json_doc::ensure_object_in(root, "providers")?;
+
+    let mut provider = serde_json::Map::new();
+    provider.insert("baseUrl".into(), json!(format!("{}/v1", client.endpoint())));
+    provider.insert("apiKey".into(), json!(pi_config_value(client.api_key())));
+    provider.insert("api".into(), json!("openai-responses"));
+    provider.insert(
+        "models".into(),
+        Value::Array(
+            chat_models(models)
+                .iter()
+                .filter_map(|m| pi_model_config(m))
+                .collect(),
+        ),
+    );
+
+    providers.insert(UPSTREAM.into(), Value::Object(provider));
+
+    json_doc::save(&path, &doc, 0o600)?;
+    Ok(format!("wrote {}", path.display()))
+}
+
+pub fn unconfigure_pi() -> Result<Option<String>> {
+    let path = pi_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    // Unlike a foreign config file floway never wrote, this one carries the
+    // API key, so an unreadable document must surface as a failure rather than
+    // "nothing to remove" — that would strand the key and drop the record.
+    let mut doc = json_doc::load_or_new_jsonc(&path, "Pi models")?;
+    if !doc.is_object() {
+        return Ok(None);
+    }
+    let root = doc.as_object_mut().unwrap();
+    if !remove_provider(root, &["providers"]) {
+        return Ok(None);
+    }
+    // A document that only held the Floway provider is removed outright.
+    // Anything else keeps a `providers` key: Pi rejects the whole file when it
+    // is absent, which would take the user's other providers down with it.
+    if root.is_empty() {
+        std::fs::remove_file(&path)?;
+    } else {
+        root.entry("providers")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        json_doc::save(&path, &doc, 0o600)?;
+    }
+    Ok(Some(format!("removed Floway from {}", path.display())))
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,7 +1166,8 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("floway-omp-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("OMP_CONFIG_DIR", &dir);
+        std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+        std::env::remove_var("PI_CONFIG_DIR");
 
         let client = Client::new("http://gw.example".into(), "test-key".into()).unwrap();
         let models = ModelList {
@@ -1058,6 +1219,281 @@ mod tests {
         let after_unconf_env = std::fs::read_to_string(&env_path).unwrap();
         assert!(after_unconf_env.contains("OTHER_ENV=val"));
         assert!(!after_unconf_env.contains("FLOWAY_API_KEY="));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_then_unconfigure_pi_round_trip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-pi-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+
+        let client = Client::new("http://gw.example".into(), "test-key-pi".into()).unwrap();
+        let models = ModelList {
+            data: vec![test_model()],
+        };
+
+        apply_pi(&client, &models).unwrap();
+
+        let models_path = pi_path();
+        assert_eq!(models_path, dir.join("models.json"));
+        assert!(models_path.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&models_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "models.json must be 0600");
+        }
+
+        // Verify content in models.json
+        let content = std::fs::read_to_string(&models_path).unwrap();
+        let val: Value = serde_json::from_str(&content).unwrap();
+        let floway = val
+            .get("providers")
+            .and_then(|p| p.get("Floway"))
+            .expect("Floway provider must exist");
+        assert_eq!(
+            floway.get("baseUrl").and_then(Value::as_str),
+            Some("http://gw.example/v1")
+        );
+        assert_eq!(
+            floway.get("apiKey").and_then(Value::as_str),
+            Some("test-key-pi")
+        );
+        assert_eq!(
+            floway.get("api").and_then(Value::as_str),
+            Some("openai-responses")
+        );
+        let models_arr = floway.get("models").and_then(Value::as_array).unwrap();
+        assert_eq!(models_arr.len(), 1);
+        assert_eq!(models_arr[0].get("id").and_then(Value::as_str), Some("gpt-5.6"));
+
+        // Inject foreign settings (foreign provider and foreign top-level key)
+        let mut doc = val;
+        doc.get_mut("providers")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("OtherProvider".into(), json!({ "baseUrl": "http://other" }));
+        doc.as_object_mut()
+            .unwrap()
+            .insert("customField".into(), json!("customValue"));
+        std::fs::write(&models_path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+        // Re-apply (update) must preserve foreign provider and top-level field
+        apply_pi(&client, &models).unwrap();
+        let after_update_raw = std::fs::read_to_string(&models_path).unwrap();
+        let after_update: Value = serde_json::from_str(&after_update_raw).unwrap();
+        assert!(after_update.get("providers").unwrap().get("OtherProvider").is_some());
+        assert!(after_update.get("providers").unwrap().get("Floway").is_some());
+        assert_eq!(
+            after_update.get("customField").and_then(Value::as_str),
+            Some("customValue")
+        );
+
+        // Unconfigure
+        let unconf = unconfigure_pi().unwrap();
+        assert!(unconf.is_some());
+
+        // Foreign provider survives, Floway removed
+        assert!(models_path.exists());
+        let after_unconf_raw = std::fs::read_to_string(&models_path).unwrap();
+        let after_unconf: Value = serde_json::from_str(&after_unconf_raw).unwrap();
+        assert!(after_unconf.get("providers").unwrap().get("OtherProvider").is_some());
+        assert!(after_unconf.get("providers").unwrap().get("Floway").is_none());
+        assert_eq!(
+            after_unconf.get("customField").and_then(Value::as_str),
+            Some("customValue")
+        );
+
+        // Round-trip without foreign keys: should delete models.json completely
+        let _ = std::fs::remove_file(&models_path);
+        apply_pi(&client, &models).unwrap();
+        assert!(models_path.exists());
+
+        let unconf2 = unconfigure_pi().unwrap();
+        assert!(unconf2.is_some());
+        assert!(
+            !models_path.exists(),
+            "models.json should be removed completely when only floway was configured"
+        );
+
+        // Pi's config dir comes from PI_CODING_AGENT_DIR only; PI_CONFIG_DIR is
+        // oh-my-pi's variable and must not steer the Pi writer.
+        std::env::remove_var("PI_CODING_AGENT_DIR");
+        let ignored = dir.join("config_root");
+        std::env::set_var("PI_CONFIG_DIR", &ignored);
+        let home = crate::fs_util::home_dir();
+        assert_eq!(
+            pi_path(),
+            home.join(".pi").join("agent").join("models.json"),
+            "PI_CONFIG_DIR must not affect Pi's models.json location"
+        );
+        std::env::remove_var("PI_CONFIG_DIR");
+
+        // Pi expands a leading `~` itself, so the writer must expand it too
+        // rather than creating a literal `~` directory.
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &dir);
+        std::env::set_var("PI_CODING_AGENT_DIR", "~/agent");
+        assert_eq!(pi_path(), dir.join("agent").join("models.json"));
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A blank `display_name` must not be written as `name`, and a blank `id`
+    /// must be skipped: Pi rejects the whole file on either, which would take
+    /// every unrelated provider down with it.
+    #[test]
+    fn pi_model_config_survives_blank_display_names() {
+        let mut model = test_model();
+        model.display_name = Some(String::new());
+        let config = pi_model_config(&model).expect("model with an id is kept");
+        assert_eq!(
+            config.get("name").and_then(Value::as_str),
+            Some("gpt-5.6"),
+            "a blank display_name falls back to the model id"
+        );
+
+        let mut nameless = test_model();
+        nameless.display_name = None;
+        assert_eq!(
+            pi_model_config(&nameless)
+                .unwrap()
+                .get("name")
+                .and_then(Value::as_str),
+            Some("gpt-5.6")
+        );
+
+        let mut idless = test_model();
+        idless.id = String::new();
+        assert!(
+            pi_model_config(&idless).is_none(),
+            "a model with no id cannot be represented in models.json"
+        );
+    }
+
+    /// Pi resolves `apiKey` as a config value template, so the writer escapes
+    /// it. This decodes the escaped form with Pi's documented rules and checks
+    /// the original literal comes back.
+    #[test]
+    fn pi_config_value_round_trips_through_pi_resolution() {
+        fn resolve(config: &str) -> String {
+            // Pi's parseConfigValueTemplate: `$$` -> `$`, `$!` -> `!`,
+            // `$VAR`/`${VAR}` -> env lookup, `!cmd` at the start -> command.
+            let mut out = String::new();
+            let mut chars = config.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c != '$' {
+                    out.push(c);
+                    continue;
+                }
+                match chars.peek() {
+                    Some('$') => {
+                        chars.next();
+                        out.push('$');
+                    }
+                    Some('!') => {
+                        chars.next();
+                        out.push('!');
+                    }
+                    _ => out.push('$'),
+                }
+            }
+            out
+        }
+
+        for literal in [
+            "sk-fw-1234",
+            "sk-a$b-c",
+            "$leading",
+            "$",
+            "${CURLY}",
+            "sk-$$already",
+        ] {
+            let written = pi_config_value(literal);
+            assert!(
+                !written.starts_with('!'),
+                "{written:?} would be executed as a shell command by Pi"
+            );
+            assert_eq!(
+                resolve(&written),
+                literal,
+                "{written:?} must resolve back to {literal:?}"
+            );
+        }
+    }
+
+    /// `unconfigure` keeps the `providers` key whenever anything else survives,
+    /// because Pi rejects a models.json that lacks it — which would unload the
+    /// user's own providers.
+    #[test]
+    fn unconfigure_pi_keeps_a_loadable_document() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-pi-unconf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+
+        let path = pi_path();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "providers": { "Floway": { "baseUrl": "http://gw.example/v1" } },
+                "customField": "keep",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(unconfigure_pi().unwrap().is_some());
+
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            after.get("customField").and_then(Value::as_str),
+            Some("keep")
+        );
+        assert_eq!(
+            after.get("providers"),
+            Some(&Value::Object(serde_json::Map::new())),
+            "Pi requires the providers key to exist"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Pi parses models.json as JSONC with an optional BOM, so a file Pi can
+    /// load must not be rejected by the writer.
+    #[test]
+    fn apply_pi_accepts_the_jsonc_superset_pi_accepts() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("floway-pi-jsonc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+
+        let path = pi_path();
+        std::fs::write(
+            &path,
+            "\u{feff}{\n  // my notes\n  \"providers\": {\n    \"Mine\": {\"baseUrl\": \"http://other\",},\n  },\n}\n",
+        )
+        .unwrap();
+
+        let client = Client::new("http://gw.example".into(), "k".into()).unwrap();
+        let models = ModelList {
+            data: vec![test_model()],
+        };
+        apply_pi(&client, &models).unwrap();
+
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(after.get("providers").unwrap().get("Mine").is_some());
+        assert!(after.get("providers").unwrap().get("Floway").is_some());
 
         std::fs::remove_dir_all(&dir).ok();
     }

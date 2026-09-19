@@ -19,7 +19,7 @@ pub struct Options {
     #[arg(long, value_name = "KEY")]
     pub api_key: Option<String>,
     /// Select agents without the menu: a comma list of ids
-    /// (claude-code,codex,oh-my-pi,opencode,zed,vscode,deepseek-harness) or `all`.
+    /// (claude-code,codex,oh-my-pi,pi,opencode,zed,vscode,deepseek-harness) or `all`.
     #[arg(long, value_name = "LIST")]
     pub agents: Option<String>,
     /// Fail instead of prompting when information is missing.
@@ -227,4 +227,21 @@ fn prompt_api_key(_endpoint: &str, saved: Option<&String>) -> Result<String> {
         );
     }
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_list_handles_all_and_aliases() {
+        let all = parse_agent_list("all").unwrap();
+        assert_eq!(all.len(), crate::agents::ALL_AGENTS.len());
+
+        let picked = parse_agent_list("pi, pi-coding-agent, dsh, omp").unwrap();
+        assert_eq!(picked.len(), 3); // pi deduplicated with pi-coding-agent
+        assert_eq!(picked[0], AgentKind::Pi);
+        assert_eq!(picked[1], AgentKind::DeepSeekHarness);
+        assert_eq!(picked[2], AgentKind::Omp);
+    }
 }

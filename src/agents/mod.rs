@@ -1,5 +1,5 @@
 //! Agentic framework integrations. Every agent mirrors one of the
-//! supported agentic harnesses (`claude | codex | omp | vscode | zed | opencode | dsh`)
+//! supported agentic harnesses (`claude | codex | omp | pi | vscode | zed | opencode | dsh`)
 //! and re-implements the writes natively in Rust so the same code path can
 //! both configure and *un*configure.
 
@@ -18,6 +18,8 @@ pub enum AgentKind {
     Codex,
     #[serde(alias = "oh-my-pi")]
     Omp,
+    #[serde(alias = "pi-coding-agent")]
+    Pi,
     Opencode,
     Zed,
     Vscode,
@@ -25,10 +27,11 @@ pub enum AgentKind {
     DeepSeekHarness,
 }
 
-pub const ALL_AGENTS: [AgentKind; 7] = [
+pub const ALL_AGENTS: [AgentKind; 8] = [
     AgentKind::ClaudeCode,
     AgentKind::Codex,
     AgentKind::Omp,
+    AgentKind::Pi,
     AgentKind::Opencode,
     AgentKind::Zed,
     AgentKind::Vscode,
@@ -41,6 +44,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => "Claude Code",
             AgentKind::Codex => "Codex",
             AgentKind::Omp => "oh-my-pi",
+            AgentKind::Pi => "Pi",
             AgentKind::Opencode => "opencode",
             AgentKind::Zed => "Zed",
             AgentKind::Vscode => "VSCode",
@@ -53,6 +57,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => "claude-code",
             AgentKind::Codex => "codex",
             AgentKind::Omp => "oh-my-pi",
+            AgentKind::Pi => "pi",
             AgentKind::Opencode => "opencode",
             AgentKind::Zed => "zed",
             AgentKind::Vscode => "vscode",
@@ -63,6 +68,7 @@ impl AgentKind {
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
             AgentKind::Omp => &["omp"],
+            AgentKind::Pi => &["pi-coding-agent"],
             AgentKind::DeepSeekHarness => &["dsh"],
             _ => &[],
         }
@@ -74,6 +80,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => claude::apply(client, models),
             AgentKind::Codex => codex::apply(client, models),
             AgentKind::Omp => harness::apply_omp(client, models),
+            AgentKind::Pi => harness::apply_pi(client, models),
             AgentKind::Opencode => harness::apply_opencode(client, models),
             AgentKind::Zed => harness::apply_zed(client, models),
             AgentKind::Vscode => harness::apply_vscode(client, models),
@@ -87,6 +94,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => claude::unconfigure(),
             AgentKind::Codex => codex::unconfigure(),
             AgentKind::Omp => harness::unconfigure_omp(),
+            AgentKind::Pi => harness::unconfigure_pi(),
             AgentKind::Opencode => harness::unconfigure_opencode(),
             AgentKind::Zed => harness::unconfigure_zed(),
             AgentKind::Vscode => harness::unconfigure_vscode(),
@@ -120,6 +128,13 @@ pub fn agent_self_update_commands(agents: &[AgentKind]) -> Option<Vec<String>> {
                 )
             }
             AgentKind::Omp => "oh-my-pi: reinstall/upgrade via its usual channel".to_string(),
+            AgentKind::Pi => {
+                let pm = crate::pm::PackageManager::detect_for_binary(Some("pi"));
+                format!(
+                    "Pi: `pi update --self` (or `{}`)",
+                    pm.global_install_command("@earendil-works/pi-coding-agent@latest")
+                )
+            }
             AgentKind::Opencode => "opencode: `opencode upgrade`".to_string(),
             AgentKind::Zed => "Zed: in-app updater or your package manager".to_string(),
             AgentKind::Vscode => "VSCode: in-app updater or your package manager".to_string(),
@@ -149,11 +164,12 @@ mod tests {
         let cmds = agent_self_update_commands(&[
             AgentKind::ClaudeCode,
             AgentKind::Codex,
+            AgentKind::Pi,
             AgentKind::DeepSeekHarness,
         ])
         .unwrap();
 
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
         assert_eq!(
             cmds[0],
             "Claude Code: `claude update` (or reinstall via bun/brew)"
@@ -164,22 +180,32 @@ mod tests {
         );
         assert_eq!(
             cmds[2],
+            "Pi: `pi update --self` (or `bun add --global @earendil-works/pi-coding-agent@latest`)"
+        );
+        assert_eq!(
+            cmds[3],
             "DeepSeek Harness: `bun add --global @deepseek-ai/dsh@latest`"
         );
 
         std::env::set_var("FLOWAY_PACKAGE_MANAGER", "pnpm");
         let cmds = agent_self_update_commands(&[
             AgentKind::Codex,
+            AgentKind::Pi,
             AgentKind::DeepSeekHarness,
         ])
         .unwrap();
 
+        assert_eq!(cmds.len(), 3);
         assert_eq!(
             cmds[0],
             "Codex: `pnpm add --global @openai/codex@latest`"
         );
         assert_eq!(
             cmds[1],
+            "Pi: `pi update --self` (or `pnpm add --global @earendil-works/pi-coding-agent@latest`)"
+        );
+        assert_eq!(
+            cmds[2],
             "DeepSeek Harness: `pnpm add --global @deepseek-ai/dsh@latest`"
         );
 
